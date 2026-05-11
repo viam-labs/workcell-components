@@ -1,0 +1,345 @@
+package workcellcomponents
+
+import (
+	"context"
+	"fmt"
+	"math"
+	"sync"
+
+	"github.com/golang/geo/r3"
+	"go.viam.com/rdk/components/generic"
+	"go.viam.com/rdk/logging"
+	"go.viam.com/rdk/referenceframe"
+	"go.viam.com/rdk/resource"
+	"go.viam.com/rdk/spatialmath"
+)
+
+// PickStationModel is the resource model for the pick station — the
+// inbound conveyor (or static fixture) where boxes arrive for the
+// palletizer to grab. Pose and surface dimensions live on the standard
+// `frame` block so the user can drag-and-save in the Viam 3D viewer;
+// pickup-specific settings (where the box stops on the surface, where
+// the vacuum grabs it) are attributes. Conveyor tilt — pitch incline
+// (around the short axis) and roll incline (around the long axis) —
+// also lives on `frame.orientation` so the 3D viewer remains the
+// canonical editor for it.
+var PickStationModel = resource.NewModel("viam", "workcell-components", "pick-station")
+
+// Standard infeed conveyor dimensions used as fallbacks when
+// frame.geometry is missing.
+const (
+	DefaultPickStationWidthMM     = 600.0
+	DefaultPickStationLengthMM    = 800.0
+	DefaultPickStationThicknessMM = 40.0
+)
+
+// PickStationConfig holds the pickup-specific knobs that aren't part of
+// the frame. All fields are optional with sensible defaults. Both
+// inclines (pitch around the short axis, roll around the long axis)
+// live in frame.orientation, decomposed at construction so the 3D
+// viewer drag-and-save and the webapp incline inputs both write the
+// same underlying pose. In Tait-Bryan ZYX terms used by the
+// underlying spatialmath helpers: pitch_incline = the roll component
+// (rotation around station-local X), roll_incline = the pitch
+// component (rotation around station-local Y). The user-facing names
+// reflect a conveyor whose long axis is "forward" (the flow
+// direction).
+//
+// The station's local frame has its origin at the bottom-left corner of
+// the conveyor surface (top face), matching the pallet convention:
+// X along width, Y along length, Z=0 at the top of the surface.
+// Box-related offsets are measured from there.
+type PickStationConfig struct {
+	// LowestPointHeightMM is the operator-measured distance from the
+	// floor (world z = 0) to the lowest physical point of the conveyor
+	// surface. Editable from the webapp; informational at runtime
+	// (frame.translation.z is the actual position used for motion
+	// planning). Useful as a recorded measurement and for UI display.
+	LowestPointHeightMM float64 `json:"lowest_point_height_mm,omitempty"`
+
+	// BoxOriginOffsetMM is where the box sits on the conveyor surface,
+	// expressed in the station's local (bottom-left-top corner) frame.
+	// x = along width, y = along length, z = box bottom above the
+	// surface (usually 0 — box rests on the surface). The vacuum
+	// grabs the center of the box's top face, so the gripper pose is
+	// (x, y, z + box_height) — box_height comes from pack-sequencer.
+	BoxOriginOffsetMM *Vec3D `json:"box_origin_offset_mm,omitempty"`
+
+	// BoxThetaDeg rotates the box around the station-local Z axis.
+	// Positive = CCW viewed from above. Lets the operator describe a
+	// box that arrives at an angle on the conveyor.
+	BoxThetaDeg float64 `json:"box_theta_deg,omitempty"`
+
+	// PickHomeZOffsetMM is the gripper's pre-grab waypoint above the
+	// top of the box. Z-only offset — XY same as the vacuum point.
+	// The arm parks here, descends to grab, then lifts back to here.
+	PickHomeZOffsetMM float64 `json:"pick_home_z_offset_mm,omitempty"`
+
+	Label string `json:"label,omitempty"`
+}
+
+// Vec3D is a plain 3D point/vector in mm. Lighter than Pose6D for
+// position-only attributes.
+type Vec3D struct {
+	X float64 `json:"x"`
+	Y float64 `json:"y"`
+	Z float64 `json:"z"`
+}
+
+func (c *PickStationConfig) Validate(_ string) ([]string, []string, error) {
+	return nil, nil, nil
+}
+
+func init() {
+	resource.RegisterComponent(generic.API, PickStationModel,
+		resource.Registration[resource.Resource, *PickStationConfig]{
+			Constructor: newPickStation,
+		},
+	)
+}
+
+type pickStation struct {
+	resource.AlwaysRebuild
+	resource.TriviallyCloseable
+
+	name   resource.Name
+	logger logging.Logger
+
+	mu sync.Mutex
+	// Resolved at construction. AlwaysRebuild means a frame edit (drag
+	// in 3D viewer or attribute write through cloud config) replays
+	// newPickStation, so these stay current without runtime polling.
+	pose                     spatialmath.Pose
+	width, length, thickness float64
+	cfg                      PickStationConfig
+}
+
+func newPickStation(
+	_ context.Context,
+	_ resource.Dependencies,
+	conf resource.Config,
+	logger logging.Logger,
+) (resource.Resource, error) {
+	cfg, err := resource.NativeConfig[*PickStationConfig](conf)
+	if err != nil {
+		return nil, err
+	}
+
+	centerPose, w, l, t := pickStationPoseAndDimsFromFrame(conf.Frame)
+	// Tait-Bryan ZYX decomposition. The user-facing pitch_incline is
+	// rotation around station-local X (the short / width axis), which
+	// the math calls "roll"; user-facing roll_incline is rotation
+	// around station-local Y (the long / length axis), which the math
+	// calls "pitch". See PickStationConfig doc-comment for the
+	// rationale.
+	mathRoll, mathPitch, yaw := decomposeRPYDeg(centerPose.Orientation())
+	pitchInclineDeg := mathRoll
+	rollInclineDeg := mathPitch
+
+	// The frame block describes the wood box's centroid (Viam
+	// convention). Internal `pose` is the bottom-left-top corner so
+	// box offsets are measured naturally from the corner — same
+	// convention as the pallet.
+	cornerOffset := spatialmath.NewPoseFromPoint(r3.Vector{X: -w / 2, Y: -l / 2, Z: t / 2})
+	cornerPose := spatialmath.Compose(centerPose, cornerOffset)
+
+	logger.Infow("pick-station configured",
+		"corner_x", cornerPose.Point().X, "corner_y", cornerPose.Point().Y, "corner_z", cornerPose.Point().Z,
+		"width_mm", w, "length_mm", l, "thickness_mm", t,
+		"pitch_incline_deg", pitchInclineDeg, "roll_incline_deg", rollInclineDeg, "yaw_deg", yaw,
+	)
+
+	return &pickStation{
+		name:      conf.ResourceName(),
+		logger:    logger,
+		pose:      cornerPose,
+		width:     w,
+		length:    l,
+		thickness: t,
+		cfg:       *cfg,
+	}, nil
+}
+
+func pickStationPoseAndDimsFromFrame(f *referenceframe.LinkConfig) (spatialmath.Pose, float64, float64, float64) {
+	w, l, t := DefaultPickStationWidthMM, DefaultPickStationLengthMM, DefaultPickStationThicknessMM
+	point := r3.Vector{}
+	var orient spatialmath.Orientation = &spatialmath.OrientationVectorDegrees{OZ: 1}
+
+	if f != nil {
+		point = f.Translation
+		if f.Orientation != nil {
+			if o, err := f.Orientation.ParseConfig(); err == nil {
+				orient = o
+			}
+		}
+		if f.Geometry != nil && f.Geometry.X > 0 && f.Geometry.Y > 0 && f.Geometry.Z > 0 {
+			w = f.Geometry.X
+			l = f.Geometry.Y
+			t = f.Geometry.Z
+		}
+	}
+
+	return spatialmath.NewPose(point, orient), w, l, t
+}
+
+func (p *pickStation) Name() resource.Name { return p.name }
+
+// DoCommand surface:
+//
+//	{"get_pose": true}        → station's frame pose (world)
+//	{"get_dimensions": true}  → {width_mm, length_mm, thickness_mm}
+//	{"get_pickup_pose": true} → world-frame pose where the vacuum
+//	                             grabs the box (frame × pitch + roll
+//	                             incline × box origin offset)
+//	{"get_pick_home_pose": true, "box_height_mm": …}
+//	                          → world-frame pose of the pre-grab
+//	                             waypoint (vacuum tip + Z offset)
+//	{"get_vacuum_pose": true, "box_height_mm": …}
+//	                          → world-frame pose at the top center of
+//	                             the box (where the vacuum lands)
+//	{"get_attributes": true}  → everything together
+func (p *pickStation) DoCommand(_ context.Context, cmd map[string]interface{}) (map[string]interface{}, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if _, ok := cmd["get_pose"]; ok {
+		return poseToWorldMap(p.pose), nil
+	}
+	if _, ok := cmd["get_dimensions"]; ok {
+		return p.dimsMap(), nil
+	}
+	if _, ok := cmd["get_pickup_pose"]; ok {
+		return poseToWorldMap(p.pickupPose()), nil
+	}
+	if _, ok := cmd["get_pick_home_pose"]; ok {
+		// box_height_mm is required to position the pick-home above
+		// the box top; default to 0 if the caller doesn't supply it.
+		boxH := asFloat(cmd["box_height_mm"])
+		return poseToWorldMap(p.pickHomePose(boxH)), nil
+	}
+	if _, ok := cmd["get_vacuum_pose"]; ok {
+		// Top center of the box — where the vacuum actually grabs.
+		// Caller supplies box_height_mm; returns world-frame pose.
+		boxH := asFloat(cmd["box_height_mm"])
+		return poseToWorldMap(p.vacuumPose(boxH)), nil
+	}
+	if _, ok := cmd["get_attributes"]; ok {
+		// pitch_incline = math roll (around X / short axis);
+		// roll_incline  = math pitch (around Y / long axis).
+		mathRoll, mathPitch, yaw := decomposeRPYDeg(p.pose.Orientation())
+		out := map[string]interface{}{
+			"label":                  p.cfg.Label,
+			"width_mm":               p.width,
+			"length_mm":              p.length,
+			"thickness_mm":           p.thickness,
+			"lowest_point_height_mm": p.cfg.LowestPointHeightMM,
+			"pitch_incline_deg":      mathRoll,
+			"roll_incline_deg":       mathPitch,
+			"yaw_deg":                yaw,
+			"box_origin_offset_mm":   p.boxOffsetMap(),
+			"box_theta_deg":          p.cfg.BoxThetaDeg,
+			"pick_home_z_offset_mm":  p.cfg.PickHomeZOffsetMM,
+			"pose":                   poseToWorldMap(p.pose),
+			"pickup_pose":            poseToWorldMap(p.pickupPose()),
+		}
+		return out, nil
+	}
+	return nil, fmt.Errorf("pick-station: unknown command %v", cmd)
+}
+
+func (p *pickStation) dimsMap() map[string]interface{} {
+	return map[string]interface{}{
+		"width_mm":     p.width,
+		"length_mm":    p.length,
+		"thickness_mm": p.thickness,
+	}
+}
+
+func (p *pickStation) boxOffsetMap() map[string]interface{} {
+	v := p.cfg.BoxOriginOffsetMM
+	if v == nil {
+		v = &Vec3D{}
+	}
+	return map[string]interface{}{"x": v.X, "y": v.Y, "z": v.Z}
+}
+
+// pickupPose returns the world-frame pose where the vacuum grabs the
+// box. The vacuum lands at the center of the box's TOP face, but
+// without knowing the box height we just return the box origin pose
+// (XY position on the surface, Z above-surface from the offset's z,
+// plus the box theta yaw). Consumers that need the actual gripper
+// pose should add box_height to Z themselves, or call
+// get_pick_home_pose with box_height_mm.
+//
+// p.pose already encodes both inclines (pitch + roll, via
+// frame.orientation); composing with the box offset and theta tilts
+// the gripper to follow the surface naturally, oriented along the
+// box's local axes.
+// Caller must hold p.mu.
+func (p *pickStation) pickupPose() spatialmath.Pose {
+	v := p.cfg.BoxOriginOffsetMM
+	if v == nil {
+		v = &Vec3D{}
+	}
+	offsetPose := spatialmath.NewPose(
+		r3.Vector{X: v.X, Y: v.Y, Z: v.Z},
+		&spatialmath.OrientationVectorDegrees{
+			OZ: -1, Theta: p.cfg.BoxThetaDeg,
+		},
+	)
+	return spatialmath.Compose(p.pose, offsetPose)
+}
+
+// vacuumPose returns the world-frame pose where the vacuum actually
+// lands: top center of the box (box origin XY + boxHeightMM on Z),
+// gripper straight down in station-local frame with the box theta
+// yaw applied. Caller supplies boxHeightMM from the pack config.
+// Caller must hold p.mu.
+func (p *pickStation) vacuumPose(boxHeightMM float64) spatialmath.Pose {
+	v := p.cfg.BoxOriginOffsetMM
+	if v == nil {
+		v = &Vec3D{}
+	}
+	offsetPose := spatialmath.NewPose(
+		r3.Vector{X: v.X, Y: v.Y, Z: v.Z + boxHeightMM},
+		&spatialmath.OrientationVectorDegrees{
+			OZ: -1, Theta: p.cfg.BoxThetaDeg,
+		},
+	)
+	return spatialmath.Compose(p.pose, offsetPose)
+}
+
+// pickHomePose returns the world-frame pose of the pre-grab waypoint:
+// directly above the top of the box by PickHomeZOffsetMM. The arm
+// parks here, descends to grab, lifts back to here. boxHeightMM is
+// supplied by the caller (typically pulled from pack-sequencer) since
+// the pick-station doesn't own box dimensions. Caller must hold p.mu.
+func (p *pickStation) pickHomePose(boxHeightMM float64) spatialmath.Pose {
+	v := p.cfg.BoxOriginOffsetMM
+	if v == nil {
+		v = &Vec3D{}
+	}
+	z := v.Z + boxHeightMM + p.cfg.PickHomeZOffsetMM
+	offsetPose := spatialmath.NewPose(
+		r3.Vector{X: v.X, Y: v.Y, Z: z},
+		&spatialmath.OrientationVectorDegrees{
+			OZ: -1, Theta: p.cfg.BoxThetaDeg,
+		},
+	)
+	return spatialmath.Compose(p.pose, offsetPose)
+}
+
+// decomposeRPYDeg returns roll/pitch/yaw (degrees) from any
+// spatialmath.Orientation, using the Tait-Bryan z-y'-x'' convention
+// that matches spatialmath.EulerAngles.
+func decomposeRPYDeg(o spatialmath.Orientation) (roll, pitch, yaw float64) {
+	if o == nil {
+		return 0, 0, 0
+	}
+	ea := o.EulerAngles()
+	if ea == nil {
+		return 0, 0, 0
+	}
+	const rad2deg = 180.0 / math.Pi
+	return ea.Roll * rad2deg, ea.Pitch * rad2deg, ea.Yaw * rad2deg
+}

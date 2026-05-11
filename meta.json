@@ -1,0 +1,30 @@
+{
+  "$schema": "https://dl.viam.dev/module.schema.json",
+  "module_id": "viam:workcell-components",
+  "visibility": "public_unlisted",
+  "url": "https://github.com/viam-labs/workcell-components",
+  "description": "Generic components for palletizing/picking workcells: a pallet component (pose + dimensions + geometry) and a pick-station component (inbound box presentation surface).",
+  "models": [
+    {
+      "api": "rdk:component:generic",
+      "model": "viam:workcell-components:pallet"
+    },
+    {
+      "api": "rdk:component:generic",
+      "model": "viam:workcell-components:pick-station"
+    }
+  ],
+  "markdown_link": "README.md",
+  "entrypoint": "bin/workcell-components",
+  "first_run": "",
+  "build": {
+    "build": "make module.tar.gz",
+    "setup": "make setup",
+    "path": "module.tar.gz",
+    "arch": [
+      "linux/amd64",
+      "linux/arm64",
+      "darwin/arm64"
+    ]
+  }
+}
