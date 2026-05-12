@@ -7,12 +7,18 @@ import (
 	"sync"
 
 	"github.com/golang/geo/r3"
+	wcsh "github.com/viam-labs/viamkit/geom"
 	"go.viam.com/rdk/components/generic"
 	"go.viam.com/rdk/logging"
 	"go.viam.com/rdk/referenceframe"
 	"go.viam.com/rdk/resource"
 	"go.viam.com/rdk/spatialmath"
 )
+
+// Vec3D is a plain 3D point/vector in mm. Re-exported from
+// github.com/viam-labs/viamkit/geom so all workcell modules share
+// the same JSON shape; the alias keeps the rest of this file readable.
+type Vec3D = wcsh.Vec3D
 
 // PickStationModel is the resource model for the pick station — the
 // inbound conveyor (or static fixture) where boxes arrive for the
@@ -76,14 +82,6 @@ type PickStationConfig struct {
 	PickHomeZOffsetMM float64 `json:"pick_home_z_offset_mm,omitempty"`
 
 	Label string `json:"label,omitempty"`
-}
-
-// Vec3D is a plain 3D point/vector in mm. Lighter than Pose6D for
-// position-only attributes.
-type Vec3D struct {
-	X float64 `json:"x"`
-	Y float64 `json:"y"`
-	Z float64 `json:"z"`
 }
 
 func (c *PickStationConfig) Validate(_ string) ([]string, []string, error) {
