@@ -270,12 +270,12 @@ func (p *pickStation) DoCommand(_ context.Context, cmd map[string]interface{}) (
 	if _, ok := cmd["get_pickup_pose"]; ok {
 		return poseToWorldMap(p.pickupPose()), nil
 	}
-	if _, ok := cmd["get_pick_home_pose"]; ok {
-		boxH := asFloat(cmd["box_height_mm"])
+	if v, ok := cmd["get_pick_home_pose"]; ok {
+		boxH := boxHeightArg(cmd, v)
 		return poseToWorldMap(p.pickHomePose(boxH)), nil
 	}
-	if _, ok := cmd["get_vacuum_pose"]; ok {
-		boxH := asFloat(cmd["box_height_mm"])
+	if v, ok := cmd["get_vacuum_pose"]; ok {
+		boxH := boxHeightArg(cmd, v)
 		return poseToWorldMap(p.vacuumPose(boxH)), nil
 	}
 	if _, ok := cmd["get_attributes"]; ok {
@@ -484,6 +484,50 @@ func (p *pickStation) pickHomePose(boxHeightMM float64) spatialmath.Pose {
 		},
 	)
 	return spatialmath.Compose(p.pose, offsetPose)
+}
+
+// Geometries implements resource.Shaped so the framesystem picks up
+// the pick-station's footprint for motion-planner collision checks
+// without the operator typing a `frame.geometry` block. The geometry
+// is a single Box centered at the resource's frame origin (Viam
+// convention: frame.translation places a geometry's centroid).
+//
+// Reads the live width/length/thickness — `set_dimensions` /
+// `set_attributes` updates take effect on the next motion plan
+// without a reconfigure of dependent modules.
+func (p *pickStation) Geometries(_ context.Context, _ map[string]any) ([]spatialmath.Geometry, error) {
+	p.mu.Lock()
+	w, l, t := p.width, p.length, p.thickness
+	label := p.cfg.Label
+	p.mu.Unlock()
+	if label == "" {
+		label = "pick-station"
+	}
+	box, err := spatialmath.NewBox(spatialmath.NewZeroPose(), r3.Vector{X: w, Y: l, Z: t}, label)
+	if err != nil {
+		return nil, fmt.Errorf("pick-station Geometries: %w", err)
+	}
+	return []spatialmath.Geometry{box}, nil
+}
+
+// boxHeightArg pulls box_height_mm from either the top-level cmd map
+// or the verb's own value when it's an object. Lets callers use
+// either calling convention:
+//
+//	{"get_vacuum_pose": true, "box_height_mm": 60}     // flat
+//	{"get_vacuum_pose": {"box_height_mm": 60}}         // nested
+//
+// The nested form matches the convention every other arg-taking verb
+// in this module already uses (set_dimensions, set_color,
+// set_attributes), so the dryrun-natural choice — and the one the
+// handler used to silently ignore — now works.
+func boxHeightArg(cmd map[string]interface{}, verbValue interface{}) float64 {
+	if m, ok := verbValue.(map[string]interface{}); ok {
+		if h := asFloat(m["box_height_mm"]); h > 0 {
+			return h
+		}
+	}
+	return asFloat(cmd["box_height_mm"])
 }
 
 // decomposeRPYDeg returns roll/pitch/yaw (degrees) from any

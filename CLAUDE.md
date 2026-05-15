@@ -63,4 +63,4 @@ Bump `VERSION` first; `make publish` reads it.
 
 - GitHub: [`viam-labs/workcell-components`](https://github.com/viam-labs/workcell-components)
 - Registry: `viam:workcell-components`
-- Latest published: `0.2.0` (intrinsic dims+color, live updates via DoCommand)
+- Latest published: `0.3.0` (`resource.Shaped` for planner-visible collision geometry; `get_vacuum_pose` / `get_pick_home_pose` accept nested-args calling convention)

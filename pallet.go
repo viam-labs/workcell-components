@@ -324,6 +324,30 @@ func (p *pallet) attributesMap() map[string]interface{} {
 	}
 }
 
+// Geometries implements resource.Shaped so the framesystem picks up
+// the pallet's footprint for motion-planner collision checks without
+// the operator typing a `frame.geometry` block. The geometry is a
+// single Box centered at the resource's frame origin (Viam
+// convention: frame.translation places a geometry's centroid).
+//
+// Reads the live width/length/thickness — `set_dimensions` /
+// `set_attributes` updates take effect on the next motion plan
+// without a reconfigure of dependent modules.
+func (p *pallet) Geometries(_ context.Context, _ map[string]any) ([]spatialmath.Geometry, error) {
+	p.mu.Lock()
+	w, l, t := p.width, p.length, p.thickness
+	label := p.cfg.Label
+	p.mu.Unlock()
+	if label == "" {
+		label = "pallet"
+	}
+	box, err := spatialmath.NewBox(spatialmath.NewZeroPose(), r3.Vector{X: w, Y: l, Z: t}, label)
+	if err != nil {
+		return nil, fmt.Errorf("pallet Geometries: %w", err)
+	}
+	return []spatialmath.Geometry{box}, nil
+}
+
 func poseToWorldMap(pose spatialmath.Pose) map[string]interface{} {
 	pt := pose.Point()
 	ov := pose.Orientation().OrientationVectorDegrees()
