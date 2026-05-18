@@ -60,7 +60,42 @@ type PalletConfig struct {
 	// Color for the 3D-viewer rendering. RGB 0..255, opacity 0..1
 	// (defaults to 1). When omitted, defaults to wood-tan.
 	Color *Color `json:"color,omitempty"`
+
+	// VisualOptions are forward-looking knobs the future workcell
+	// visualization layer reads. Declaring them now stabilizes the
+	// Config schema so consumers (webapp form fields, contracts
+	// types) don't churn when the viz layer lands. No behavioral
+	// effect in this release — the values flow through get_attributes
+	// and set_attributes so callers can persist their preference.
+	VisualOptions
 }
+
+// VisualOptions are shared between pallet and pick-station. The
+// future workcell-visualizer reads them; for now they're configuration
+// state with no runtime effect.
+type VisualOptions struct {
+	// ShowAxes, when true, asks the viz layer to render a coordinate-
+	// axes helper at the component's frame origin. Defaults false.
+	ShowAxes bool `json:"show_axes,omitempty"`
+
+	// Visible, when set to false, asks the viz layer to hide the
+	// component in the 3D scene. Pointer so a missing value means
+	// "use default" (true) rather than "explicitly hidden" (false).
+	// Does NOT affect motion-planner visibility — collision geometry
+	// still applies.
+	Visible *bool `json:"visible,omitempty"`
+
+	// Opacity is a component-wide opacity multiplier (0..1). Composes
+	// with the color's own opacity at render time. Pointer so unset
+	// means "no override." Defaults to 1.0 when nil.
+	Opacity *float64 `json:"opacity,omitempty"`
+}
+
+// PalletHomeDefaultSafetyHeightMM is the default safety altitude for
+// `get_pallet_home_pose` — far enough above the top face that a
+// retracted gripper carrying a typical box (~100 mm tall) won't clip
+// the pallet's top boxes. Callers can override per-call.
+const PalletHomeDefaultSafetyHeightMM = 200.0
 
 func (c *PalletConfig) Validate(_ string) ([]string, []string, error) {
 	if c.Color != nil {
@@ -182,25 +217,38 @@ func (p *pallet) Name() resource.Name { return p.name }
 
 // DoCommand surface:
 //
-//	{"get_pose": true}        → {x, y, z, o_x, o_y, o_z, theta}
-//	{"get_dimensions": true}  → {width_mm, length_mm, thickness_mm}
-//	{"get_color": true}       → {r, g, b, opacity}
-//	{"get_attributes": true}  → {label, width_mm, length_mm, thickness_mm,
-//	                             color, pose}
+//	{"get_pose": true}             → {x, y, z, o_x, o_y, o_z, theta}
+//	{"get_dimensions": true}       → {width_mm, length_mm, thickness_mm}
+//	{"get_color": true}            → {r, g, b, opacity}
+//	{"get_attributes": true}       → batch read (everything below)
 //
-//	{"set_dimensions": {"width_mm": …, "length_mm": …,
-//	                    "thickness_mm": …}}
-//	                          → updates dimensions in place, returns the
-//	                             new {width_mm, length_mm, thickness_mm}
-//	{"set_color": {"r": …, "g": …, "b": …, "opacity": …}}
-//	                          → updates color in place, returns the new
-//	                             {r, g, b, opacity}
-//	{"set_attributes": {<any subset of width_mm/length_mm/thickness_mm/
-//	                    color/label>}}
-//	                          → batch update, returns get_attributes shape
+//	{"get_pallet_home_pose": true | {"safety_height_mm": h}}
+//	                               → world-frame pose above pallet
+//	                                  center, gripper-down. Default
+//	                                  safety_height_mm = 200.
+//	{"get_top_face_center": true}  → world-frame pose at the center of
+//	                                  the pallet's top face, gripper-
+//	                                  down. (= get_pallet_home_pose
+//	                                  with safety_height_mm = 0.)
+//	{"get_corner_poses": true}     → {"corners":[pose, pose, pose, pose]}
+//	                                  world-frame poses of the four top-
+//	                                  face corners, gripper-down. Order
+//	                                  is CCW from bottom-left: (0,0),
+//	                                  (w,0), (w,l), (0,l) in pallet-local.
+//	{"get_status": true}           → {ok, name, dims_valid, color_valid,
+//	                                  visible, model}
+//	{"get_summary": true}          → {"summary":"…"} one-line human str
+//
+//	{"set_dimensions": {…}}        → updates dimensions in place
+//	{"set_color": {…}}             → updates color in place
+//	{"set_attributes": {…}}        → batch update of any subset of
+//	                                  width/length/thickness/color/label/
+//	                                  show_axes/visible/opacity
 //
 // All set_* verbs are no-ops for omitted fields — partial updates are
-// supported. Returns the post-update state so callers can confirm.
+// supported. Their responses include `{"persisted": false, "hint":
+// "…"}` so callers see that live mutation does NOT survive a
+// reconfigure (the cell config wins on next reload).
 func (p *pallet) DoCommand(_ context.Context, cmd map[string]interface{}) (map[string]interface{}, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -217,18 +265,115 @@ func (p *pallet) DoCommand(_ context.Context, cmd map[string]interface{}) (map[s
 	if _, ok := cmd["get_attributes"]; ok {
 		return p.attributesMap(), nil
 	}
+	if v, ok := cmd["get_pallet_home_pose"]; ok {
+		safety := safetyHeightArg(v, PalletHomeDefaultSafetyHeightMM)
+		return poseToWorldMap(p.palletHomePose(safety)), nil
+	}
+	if _, ok := cmd["get_top_face_center"]; ok {
+		return poseToWorldMap(p.palletHomePose(0)), nil
+	}
+	if _, ok := cmd["get_corner_poses"]; ok {
+		corners := p.cornerPoses()
+		out := make([]map[string]interface{}, 0, 4)
+		for _, c := range corners {
+			out = append(out, poseToWorldMap(c))
+		}
+		return map[string]interface{}{"corners": out}, nil
+	}
+	if _, ok := cmd["get_status"]; ok {
+		return p.statusMap(), nil
+	}
+	if _, ok := cmd["get_summary"]; ok {
+		return map[string]interface{}{"summary": p.summaryString()}, nil
+	}
 
 	if v, ok := cmd["set_dimensions"]; ok {
-		return p.setDimensions(v)
+		return withPersistHint(p.setDimensions(v))
 	}
 	if v, ok := cmd["set_color"]; ok {
-		return p.setColor(v)
+		return withPersistHint(p.setColor(v))
 	}
 	if v, ok := cmd["set_attributes"]; ok {
-		return p.setAttributes(v)
+		return withPersistHint(p.setAttributes(v))
 	}
 
 	return nil, fmt.Errorf("pallet: unknown command %v", cmd)
+}
+
+// palletHomePose returns a world-frame pose at the center of the
+// pallet's top face plus `safetyHeightMM` in world-Z. Gripper-down
+// orientation. Caller must hold p.mu.
+//
+// Note: the pallet's `p.pose` is the wood's centroid (Viam frame
+// convention — dragging the frame in the 3D viewer drags the visible
+// box). Top-face center is the centroid lifted by thickness/2.
+func (p *pallet) palletHomePose(safetyHeightMM float64) spatialmath.Pose {
+	// Compose with (0, 0, t/2 + safetyHeight) in pallet-local frame
+	// to land above the top face's center.
+	localOffset := spatialmath.NewPose(
+		r3.Vector{X: 0, Y: 0, Z: p.thickness/2 + safetyHeightMM},
+		&spatialmath.OrientationVectorDegrees{OZ: 1}, // identity OV in local frame
+	)
+	composed := spatialmath.Compose(p.pose, localOffset)
+	// Override orientation: gripper straight down (OZ=-1) regardless
+	// of pallet's local orientation. The pallet's own orientation
+	// applies to the top-face normal (via the compose above); the
+	// caller wants to grasp downward in world frame.
+	return spatialmath.NewPose(composed.Point(),
+		&spatialmath.OrientationVectorDegrees{OZ: -1, Theta: 0})
+}
+
+// cornerPoses returns the four world-frame poses at the top-face
+// corners. Order is CCW viewed from above: BL (-w/2, -l/2), BR
+// (+w/2, -l/2), TR (+w/2, +l/2), TL (-w/2, +l/2) — all in pallet-
+// local frame, then composed with the pallet's centroid pose.
+// Gripper-down orientation at each corner. Caller must hold p.mu.
+func (p *pallet) cornerPoses() [4]spatialmath.Pose {
+	halfW, halfL, halfT := p.width/2, p.length/2, p.thickness/2
+	corners := [4]r3.Vector{
+		{X: -halfW, Y: -halfL, Z: halfT}, // BL top
+		{X: +halfW, Y: -halfL, Z: halfT}, // BR top
+		{X: +halfW, Y: +halfL, Z: halfT}, // TR top
+		{X: -halfW, Y: +halfL, Z: halfT}, // TL top
+	}
+	var out [4]spatialmath.Pose
+	for i, local := range corners {
+		localPose := spatialmath.NewPose(local, &spatialmath.OrientationVectorDegrees{OZ: 1})
+		composed := spatialmath.Compose(p.pose, localPose)
+		out[i] = spatialmath.NewPose(composed.Point(),
+			&spatialmath.OrientationVectorDegrees{OZ: -1, Theta: 0})
+	}
+	return out
+}
+
+// statusMap returns the runtime health snapshot. Caller must hold p.mu.
+func (p *pallet) statusMap() map[string]interface{} {
+	visible := true
+	if p.cfg.Visible != nil {
+		visible = *p.cfg.Visible
+	}
+	return map[string]interface{}{
+		"ok":           true,
+		"model":        PalletModel.String(),
+		"name":         p.name.String(),
+		"dims_valid":   p.width > 0 && p.length > 0 && p.thickness > 0,
+		"color_valid":  validateColor(p.color) == nil,
+		"visible":      visible,
+		"show_axes":    p.cfg.ShowAxes,
+	}
+}
+
+// summaryString builds a one-line human description. Caller must hold p.mu.
+func (p *pallet) summaryString() string {
+	label := p.cfg.Label
+	if label == "" {
+		label = p.name.Name
+	}
+	pt := p.pose.Point()
+	return fmt.Sprintf("pallet %q, %.1fx%.1fx%.1f mm, color (%d,%d,%d), corner at (%.1f, %.1f, %.1f)",
+		label, p.width, p.length, p.thickness,
+		p.color.R, p.color.G, p.color.B,
+		pt.X, pt.Y, pt.Z)
 }
 
 // Caller must hold p.mu.
@@ -300,6 +445,7 @@ func (p *pallet) setAttributes(v interface{}) (map[string]interface{}, error) {
 	if lbl, ok := m["label"].(string); ok {
 		p.cfg.Label = lbl
 	}
+	applyVisualOptions(&p.cfg.VisualOptions, m)
 	p.logger.Infow("pallet attributes updated via DoCommand")
 	return p.attributesMap(), nil
 }
@@ -314,14 +460,17 @@ func (p *pallet) dimsMap() map[string]interface{} {
 
 // Caller must hold p.mu.
 func (p *pallet) attributesMap() map[string]interface{} {
-	return map[string]interface{}{
+	out := map[string]interface{}{
 		"label":        p.cfg.Label,
 		"width_mm":     p.width,
 		"length_mm":    p.length,
 		"thickness_mm": p.thickness,
 		"color":        p.color.toMap(),
 		"pose":         poseToWorldMap(p.pose),
+		"summary":      p.summaryString(),
 	}
+	mergeVisualOptions(out, p.cfg.VisualOptions)
+	return out
 }
 
 // Geometries implements resource.Shaped so the framesystem picks up

@@ -98,8 +98,25 @@ type PickStationConfig struct {
 	// (defaults to 1). When omitted, defaults to metallic grey.
 	Color *Color `json:"color,omitempty"`
 
+	// ConveyorDirection is the unit vector along which the conveyor
+	// flows. The palletizer's "retract along the conveyor to clear
+	// trailing boxes" move translates in this direction; an arrow
+	// visual (future) renders at the conveyor surface. Conceptually
+	// belongs on the conveyor, not the palletizer that consumes it.
+	// Defaults to {0, 1, 0} (boxes flow in world +Y) when unset.
+	ConveyorDirection *Vec3D `json:"conveyor_direction,omitempty"`
+
 	Label string `json:"label,omitempty"`
+
+	// VisualOptions — see pallet.VisualOptions for semantics. No
+	// runtime effect in this release; future viz layer will read.
+	VisualOptions
 }
+
+// DefaultConveyorDirection is the fallback for ConveyorDirection
+// when neither the Config nor an explicit set_attributes call has
+// supplied one.
+var DefaultConveyorDirection = Vec3D{X: 0, Y: 1, Z: 0}
 
 func (c *PickStationConfig) Validate(_ string) ([]string, []string, error) {
 	if c.Color != nil {
@@ -232,28 +249,34 @@ func (p *pickStation) Name() resource.Name { return p.name }
 
 // DoCommand surface:
 //
-//	{"get_pose": true}        → station's frame pose (world)
-//	{"get_dimensions": true}  → {width_mm, length_mm, thickness_mm}
-//	{"get_color": true}       → {r, g, b, opacity}
-//	{"get_pickup_pose": true} → world-frame pose where the vacuum
-//	                             grabs the box (frame × pitch + roll
-//	                             incline × box origin offset)
-//	{"get_pick_home_pose": true, "box_height_mm": …}
-//	                          → world-frame pose of the pre-grab
-//	                             waypoint (vacuum tip + Z offset)
-//	{"get_vacuum_pose": true, "box_height_mm": …}
-//	                          → world-frame pose at the top center of
-//	                             the box (where the vacuum lands)
-//	{"get_attributes": true}  → everything together
+//	{"get_pose": true}             → station's frame pose (world)
+//	{"get_dimensions": true}       → {width_mm, length_mm, thickness_mm}
+//	{"get_color": true}            → {r, g, b, opacity}
+//	{"get_pickup_pose": true}      → world pose where vacuum grabs
+//	{"get_pick_home_pose": {"box_height_mm": …}}
+//	                                → world pose of pre-grab waypoint
+//	{"get_vacuum_pose": {"box_height_mm": …}}
+//	                                → world pose at box top center
+//	{"get_conveyor_direction": true}
+//	                                → {x, y, z} unit vector
+//	{"get_attributes": true}       → batch read of everything
+//	{"get_status": true}           → {ok, name, model, dims_valid,
+//	                                  color_valid, visible, show_axes}
+//	{"get_summary": true}          → {"summary":"…"} one-line human
 //
-//	{"set_dimensions": {"width_mm": …, "length_mm": …,
-//	                    "thickness_mm": …}}
-//	                          → updates dimensions in place
-//	{"set_color": {"r": …, "g": …, "b": …, "opacity": …}}
-//	                          → updates color in place
-//	{"set_attributes": {…}}   → batch update of any subset of dims,
-//	                             color, label, box_origin_offset_mm,
-//	                             box_theta_deg, pick_home_z_offset_mm
+//	{"set_dimensions": {…}}        → updates dimensions in place
+//	{"set_color": {…}}             → updates color in place
+//	{"set_attributes": {…}}        → batch update of any subset of
+//	                                  dims, color, label,
+//	                                  box_origin_offset_mm,
+//	                                  box_theta_deg,
+//	                                  pick_home_z_offset_mm,
+//	                                  conveyor_direction,
+//	                                  show_axes, visible, opacity
+//
+// All set_* responses include `{"persisted": false, "hint":
+// "…live until reconfigure…"}` so callers see that in-memory edits
+// revert on next config reload.
 func (p *pickStation) DoCommand(_ context.Context, cmd map[string]interface{}) (map[string]interface{}, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -281,18 +304,69 @@ func (p *pickStation) DoCommand(_ context.Context, cmd map[string]interface{}) (
 	if _, ok := cmd["get_attributes"]; ok {
 		return p.attributesMap(), nil
 	}
+	if _, ok := cmd["get_conveyor_direction"]; ok {
+		v := p.effectiveConveyorDirection()
+		return map[string]interface{}{"x": v.X, "y": v.Y, "z": v.Z}, nil
+	}
+	if _, ok := cmd["get_status"]; ok {
+		return p.statusMap(), nil
+	}
+	if _, ok := cmd["get_summary"]; ok {
+		return map[string]interface{}{"summary": p.summaryString()}, nil
+	}
 
 	if v, ok := cmd["set_dimensions"]; ok {
-		return p.setDimensions(v)
+		return withPersistHint(p.setDimensions(v))
 	}
 	if v, ok := cmd["set_color"]; ok {
-		return p.setColor(v)
+		return withPersistHint(p.setColor(v))
 	}
 	if v, ok := cmd["set_attributes"]; ok {
-		return p.setAttributes(v)
+		return withPersistHint(p.setAttributes(v))
 	}
 
 	return nil, fmt.Errorf("pick-station: unknown command %v", cmd)
+}
+
+// effectiveConveyorDirection returns the configured ConveyorDirection
+// or the default if unset. Caller must hold p.mu.
+func (p *pickStation) effectiveConveyorDirection() Vec3D {
+	if p.cfg.ConveyorDirection != nil {
+		return *p.cfg.ConveyorDirection
+	}
+	return DefaultConveyorDirection
+}
+
+// statusMap returns the runtime health snapshot. Caller must hold p.mu.
+func (p *pickStation) statusMap() map[string]interface{} {
+	visible := true
+	if p.cfg.Visible != nil {
+		visible = *p.cfg.Visible
+	}
+	return map[string]interface{}{
+		"ok":          true,
+		"model":       PickStationModel.String(),
+		"name":        p.name.String(),
+		"dims_valid":  p.width > 0 && p.length > 0 && p.thickness > 0,
+		"color_valid": validateColor(p.color) == nil,
+		"visible":     visible,
+		"show_axes":   p.cfg.ShowAxes,
+	}
+}
+
+// summaryString builds a one-line human description. Caller must hold p.mu.
+func (p *pickStation) summaryString() string {
+	label := p.cfg.Label
+	if label == "" {
+		label = p.name.Name
+	}
+	pt := p.pose.Point()
+	conv := p.effectiveConveyorDirection()
+	return fmt.Sprintf("pick-station %q, %.1fx%.1fx%.1f mm, color (%d,%d,%d), corner at (%.1f, %.1f, %.1f), conveyor (%.2f, %.2f, %.2f)",
+		label, p.width, p.length, p.thickness,
+		p.color.R, p.color.G, p.color.B,
+		pt.X, pt.Y, pt.Z,
+		conv.X, conv.Y, conv.Z)
 }
 
 // Caller must hold p.mu.
@@ -377,6 +451,14 @@ func (p *pickStation) setAttributes(v interface{}) (map[string]interface{}, erro
 			Z: asFloat(v2["z"]),
 		}
 	}
+	if v2, ok := m["conveyor_direction"].(map[string]interface{}); ok {
+		p.cfg.ConveyorDirection = &Vec3D{
+			X: asFloat(v2["x"]),
+			Y: asFloat(v2["y"]),
+			Z: asFloat(v2["z"]),
+		}
+	}
+	applyVisualOptions(&p.cfg.VisualOptions, m)
 	p.logger.Infow("pick-station attributes updated via DoCommand")
 	return p.attributesMap(), nil
 }
@@ -394,7 +476,8 @@ func (p *pickStation) attributesMap() map[string]interface{} {
 	// pitch_incline = math roll (around X / short axis);
 	// roll_incline  = math pitch (around Y / long axis).
 	mathRoll, mathPitch, yaw := decomposeRPYDeg(p.pose.Orientation())
-	return map[string]interface{}{
+	conv := p.effectiveConveyorDirection()
+	out := map[string]interface{}{
 		"label":                  p.cfg.Label,
 		"width_mm":               p.width,
 		"length_mm":              p.length,
@@ -407,9 +490,13 @@ func (p *pickStation) attributesMap() map[string]interface{} {
 		"box_origin_offset_mm":   p.boxOffsetMap(),
 		"box_theta_deg":          p.cfg.BoxThetaDeg,
 		"pick_home_z_offset_mm":  p.cfg.PickHomeZOffsetMM,
+		"conveyor_direction":     map[string]interface{}{"x": conv.X, "y": conv.Y, "z": conv.Z},
 		"pose":                   poseToWorldMap(p.pose),
 		"pickup_pose":            poseToWorldMap(p.pickupPose()),
+		"summary":                p.summaryString(),
 	}
+	mergeVisualOptions(out, p.cfg.VisualOptions)
+	return out
 }
 
 func (p *pickStation) boxOffsetMap() map[string]interface{} {

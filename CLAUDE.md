@@ -63,4 +63,4 @@ Bump `VERSION` first; `make publish` reads it.
 
 - GitHub: [`viam-labs/workcell-components`](https://github.com/viam-labs/workcell-components)
 - Registry: `viam:workcell-components`
-- Latest published: `0.3.0` (`resource.Shaped` for planner-visible collision geometry; `get_vacuum_pose` / `get_pick_home_pose` accept nested-args calling convention)
+- Latest published: `0.4.0` (external surface gaps from dryrun-3: pallet `get_pallet_home_pose` / `get_top_face_center` / `get_corner_poses`; pick-station `conveyor_direction` attr + `get_conveyor_direction`; both `get_status` / `get_summary`; forward-looking `show_axes`/`visible`/`opacity` attrs; set_* persist-hint)

@@ -190,3 +190,194 @@ func newPickStationForTest(t *testing.T, cfg *PickStationConfig) *pickStation {
 	}
 	return r.(*pickStation)
 }
+
+// 0.4.0 — new external-surface verbs and attrs.
+
+func TestPalletGetPalletHomePose_DefaultSafetyHeight(t *testing.T) {
+	p := newPalletForTest(t, &PalletConfig{
+		WidthMM: 600, LengthMM: 400, ThicknessMM: 100,
+	})
+	resp, err := p.DoCommand(context.Background(), map[string]interface{}{
+		"get_pallet_home_pose": true,
+	})
+	if err != nil {
+		t.Fatalf("DoCommand: %v", err)
+	}
+	// Frame at centroid (0, 0, 0); pallet home is at centroid +
+	// (0, 0, thickness/2 + safety) = (0, 0, 250).
+	if math.Abs(resp["x"].(float64)-0) > eps ||
+		math.Abs(resp["y"].(float64)-0) > eps ||
+		math.Abs(resp["z"].(float64)-250) > eps {
+		t.Errorf("home pose: got (%v, %v, %v), want (0, 0, 250)",
+			resp["x"], resp["y"], resp["z"])
+	}
+	// Gripper-down orientation.
+	if math.Abs(resp["o_z"].(float64)-(-1)) > eps {
+		t.Errorf("o_z: got %v, want -1", resp["o_z"])
+	}
+}
+
+func TestPalletGetPalletHomePose_NestedSafetyHeight(t *testing.T) {
+	p := newPalletForTest(t, &PalletConfig{
+		WidthMM: 600, LengthMM: 400, ThicknessMM: 100,
+	})
+	resp, _ := p.DoCommand(context.Background(), map[string]interface{}{
+		"get_pallet_home_pose": map[string]interface{}{"safety_height_mm": 500.0},
+	})
+	if math.Abs(resp["z"].(float64)-550) > eps {
+		t.Errorf("z with safety=500: got %v, want 550 (50 + 500)", resp["z"])
+	}
+}
+
+func TestPalletGetTopFaceCenter(t *testing.T) {
+	p := newPalletForTest(t, &PalletConfig{
+		WidthMM: 600, LengthMM: 400, ThicknessMM: 100,
+	})
+	resp, _ := p.DoCommand(context.Background(), map[string]interface{}{
+		"get_top_face_center": true,
+	})
+	// Centroid at (0,0,0); top face center at (0, 0, +t/2 = 50).
+	if math.Abs(resp["x"].(float64)-0) > eps ||
+		math.Abs(resp["y"].(float64)-0) > eps ||
+		math.Abs(resp["z"].(float64)-50) > eps {
+		t.Errorf("top-face center: got (%v, %v, %v), want (0, 0, 50)",
+			resp["x"], resp["y"], resp["z"])
+	}
+}
+
+func TestPalletGetCornerPoses(t *testing.T) {
+	p := newPalletForTest(t, &PalletConfig{
+		WidthMM: 600, LengthMM: 400, ThicknessMM: 100,
+	})
+	resp, _ := p.DoCommand(context.Background(), map[string]interface{}{
+		"get_corner_poses": true,
+	})
+	corners, ok := resp["corners"].([]map[string]interface{})
+	if !ok {
+		t.Fatalf("corners shape: got %T, want []map", resp["corners"])
+	}
+	if len(corners) != 4 {
+		t.Fatalf("corner count: got %d, want 4", len(corners))
+	}
+	// Centroid at (0,0,0); top-face corners at centroid ± (w/2, l/2)
+	// at Z = +t/2 = 50. CCW from BL.
+	want := [4][2]float64{
+		{-300, -200}, // BL
+		{+300, -200}, // BR
+		{+300, +200}, // TR
+		{-300, +200}, // TL
+	}
+	for i, c := range corners {
+		if math.Abs(c["x"].(float64)-want[i][0]) > eps ||
+			math.Abs(c["y"].(float64)-want[i][1]) > eps {
+			t.Errorf("corner %d: got (%v, %v), want %v", i, c["x"], c["y"], want[i])
+		}
+		if math.Abs(c["z"].(float64)-50) > eps {
+			t.Errorf("corner %d Z: got %v, want 50", i, c["z"])
+		}
+	}
+}
+
+func TestPalletGetStatus(t *testing.T) {
+	p := newPalletForTest(t, &PalletConfig{})
+	resp, _ := p.DoCommand(context.Background(), map[string]interface{}{"get_status": true})
+	if !resp["ok"].(bool) {
+		t.Errorf("ok: got %v, want true", resp["ok"])
+	}
+	if !resp["visible"].(bool) {
+		t.Errorf("default visible: got %v, want true", resp["visible"])
+	}
+	if resp["show_axes"].(bool) {
+		t.Errorf("default show_axes: got %v, want false", resp["show_axes"])
+	}
+	if !resp["dims_valid"].(bool) {
+		t.Errorf("dims_valid: got %v, want true", resp["dims_valid"])
+	}
+}
+
+func TestPalletGetSummary(t *testing.T) {
+	p := newPalletForTest(t, &PalletConfig{Label: "test"})
+	resp, _ := p.DoCommand(context.Background(), map[string]interface{}{"get_summary": true})
+	s := resp["summary"].(string)
+	if !contains(s, "test") || !contains(s, "1219.2") {
+		t.Errorf("summary missing label or dims: %q", s)
+	}
+}
+
+func TestSetPersistHint(t *testing.T) {
+	p := newPalletForTest(t, &PalletConfig{})
+	resp, _ := p.DoCommand(context.Background(), map[string]interface{}{
+		"set_dimensions": map[string]interface{}{"width_mm": 999.0},
+	})
+	if resp["persisted"].(bool) {
+		t.Errorf("persisted: got true, want false")
+	}
+	if resp["hint"].(string) == "" {
+		t.Error("hint should be non-empty")
+	}
+}
+
+func TestSetAttributesVisualOptions(t *testing.T) {
+	p := newPalletForTest(t, &PalletConfig{})
+	resp, _ := p.DoCommand(context.Background(), map[string]interface{}{
+		"set_attributes": map[string]interface{}{
+			"show_axes": true,
+			"visible":   false,
+			"opacity":   0.5,
+		},
+	})
+	if !resp["show_axes"].(bool) {
+		t.Errorf("show_axes after set: got %v, want true", resp["show_axes"])
+	}
+	if resp["visible"].(bool) {
+		t.Errorf("visible after set: got %v, want false", resp["visible"])
+	}
+	if math.Abs(resp["opacity"].(float64)-0.5) > eps {
+		t.Errorf("opacity after set: got %v, want 0.5", resp["opacity"])
+	}
+}
+
+func TestPickStationGetConveyorDirection_Default(t *testing.T) {
+	ps := newPickStationForTest(t, &PickStationConfig{})
+	resp, _ := ps.DoCommand(context.Background(), map[string]interface{}{
+		"get_conveyor_direction": true,
+	})
+	if resp["y"].(float64) != 1 || resp["x"].(float64) != 0 || resp["z"].(float64) != 0 {
+		t.Errorf("default conveyor direction: got %v, want (0, 1, 0)", resp)
+	}
+}
+
+func TestPickStationSetConveyorDirection(t *testing.T) {
+	ps := newPickStationForTest(t, &PickStationConfig{})
+	_, _ = ps.DoCommand(context.Background(), map[string]interface{}{
+		"set_attributes": map[string]interface{}{
+			"conveyor_direction": map[string]interface{}{"x": 0.0, "y": -1.0, "z": 0.0},
+		},
+	})
+	resp, _ := ps.DoCommand(context.Background(), map[string]interface{}{
+		"get_conveyor_direction": true,
+	})
+	if resp["y"].(float64) != -1 {
+		t.Errorf("after set: got %v, want y=-1", resp)
+	}
+}
+
+func TestPickStationGetStatus(t *testing.T) {
+	ps := newPickStationForTest(t, &PickStationConfig{})
+	resp, _ := ps.DoCommand(context.Background(), map[string]interface{}{"get_status": true})
+	if !resp["ok"].(bool) {
+		t.Errorf("ok: got %v", resp["ok"])
+	}
+	if !resp["visible"].(bool) {
+		t.Errorf("default visible: got %v", resp["visible"])
+	}
+}
+
+func contains(haystack, needle string) bool {
+	for i := 0; i+len(needle) <= len(haystack); i++ {
+		if haystack[i:i+len(needle)] == needle {
+			return true
+		}
+	}
+	return false
+}

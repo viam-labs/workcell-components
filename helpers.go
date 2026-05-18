@@ -90,3 +90,80 @@ func validateColor(c Color) error {
 	}
 	return nil
 }
+
+// persistHint is the standard "your live edit isn't durable" warning
+// embedded in every set_* response. The cell config is the source of
+// truth — a reconfigure (or viam-server restart) reverts in-memory
+// mutations.
+const persistHint = "live until reconfigure; persist by editing the cell config"
+
+// withPersistHint annotates a set_* response with the standard
+// persistence warning. Pure pass-through on the error path.
+func withPersistHint(resp map[string]interface{}, err error) (map[string]interface{}, error) {
+	if err != nil {
+		return resp, err
+	}
+	if resp == nil {
+		resp = map[string]interface{}{}
+	}
+	resp["persisted"] = false
+	resp["hint"] = persistHint
+	return resp, nil
+}
+
+// safetyHeightArg pulls a safety_height_mm value from the verb's
+// argument. The verb value can be `true` (use default), a number
+// (interpret as the height directly), or a `{"safety_height_mm": h}`
+// object. Anything else falls back to the default.
+func safetyHeightArg(verbValue interface{}, defaultMM float64) float64 {
+	switch v := verbValue.(type) {
+	case bool:
+		return defaultMM
+	case float64:
+		if v > 0 {
+			return v
+		}
+	case map[string]interface{}:
+		if h := asFloat(v["safety_height_mm"]); h > 0 {
+			return h
+		}
+	}
+	return defaultMM
+}
+
+// applyVisualOptions reads show_axes / visible / opacity from a
+// set_attributes payload map into the supplied VisualOptions struct.
+// Missing fields are no-ops; partial updates supported.
+func applyVisualOptions(opts *VisualOptions, m map[string]interface{}) {
+	if v, ok := m["show_axes"].(bool); ok {
+		opts.ShowAxes = v
+	}
+	if v, ok := m["visible"].(bool); ok {
+		b := v
+		opts.Visible = &b
+	}
+	if v, ok := m["opacity"]; ok {
+		f := asFloat(v)
+		if f >= 0 && f <= 1 {
+			opts.Opacity = &f
+		}
+	}
+}
+
+// mergeVisualOptions appends the visual-options keys to an
+// attributes-shaped map. Visible / Opacity render as concrete bool /
+// number values (defaults filled in) so consumers don't have to handle
+// the unset case.
+func mergeVisualOptions(out map[string]interface{}, opts VisualOptions) {
+	out["show_axes"] = opts.ShowAxes
+	visible := true
+	if opts.Visible != nil {
+		visible = *opts.Visible
+	}
+	out["visible"] = visible
+	opacity := 1.0
+	if opts.Opacity != nil {
+		opacity = *opts.Opacity
+	}
+	out["opacity"] = opacity
+}
