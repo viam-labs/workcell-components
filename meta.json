@@ -3,7 +3,7 @@
   "module_id": "viam:workcell-components",
   "visibility": "public",
   "url": "https://github.com/viam-labs/workcell-components",
-  "description": "Generic components for palletizing/picking workcells: a pallet component (pose + dimensions + geometry) and a pick-station component (inbound box presentation surface).",
+  "description": "Generic components for palletizing/picking workcells: a pallet component (pose + dimensions + geometry), a pick-station component (inbound box presentation surface), and a workcell-scene WSS service that publishes them as visuals to the 3D viewer.",
   "models": [
     {
       "api": "rdk:component:generic",
@@ -12,6 +12,10 @@
     {
       "api": "rdk:component:generic",
       "model": "viam:workcell-components:pick-station"
+    },
+    {
+      "api": "rdk:service:world_state_store",
+      "model": "viam:workcell-components:workcell-scene"
     }
   ],
   "markdown_link": "README.md",

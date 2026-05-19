@@ -63,4 +63,4 @@ Bump `VERSION` first; `make publish` reads it.
 
 - GitHub: [`viam-labs/workcell-components`](https://github.com/viam-labs/workcell-components)
 - Registry: `viam:workcell-components`
-- Latest published: `0.4.0` (external surface gaps from dryrun-3: pallet `get_pallet_home_pose` / `get_top_face_center` / `get_corner_poses`; pick-station `conveyor_direction` attr + `get_conveyor_direction`; both `get_status` / `get_summary`; forward-looking `show_axes`/`visible`/`opacity` attrs; set_* persist-hint)
+- Latest published: `0.5.0` (NEW `viam:workcell-components:workcell-scene` WSS service that publishes pallet + pick-station as Box transforms to the 3D viewer — closes the recurring "components invisible in the 3D scene" finding from dryruns 2 / 3 / 4. Plus `get_visual_pose` verb on both components — returns the centroid pose unambiguously, used by the scene service.)

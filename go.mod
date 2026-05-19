@@ -4,7 +4,7 @@ go 1.25.1
 
 require (
 	github.com/golang/geo v0.0.0-20260505155700-1c5af9662e82
-	github.com/viam-labs/viamkit v0.1.0
+	github.com/viam-labs/viamkit v0.12.0
 	go.viam.com/rdk v0.105.0
 )
 

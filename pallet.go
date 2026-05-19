@@ -256,6 +256,13 @@ func (p *pallet) DoCommand(_ context.Context, cmd map[string]interface{}) (map[s
 	if _, ok := cmd["get_pose"]; ok {
 		return poseToWorldMap(p.pose), nil
 	}
+	if _, ok := cmd["get_visual_pose"]; ok {
+		// Pallet's p.pose IS the centroid (Viam frame convention —
+		// dragging the frame in the 3D viewer drags the visible box),
+		// so visual pose == get_pose. Symmetric with pick-station's
+		// get_visual_pose which composes the corner→center offset.
+		return poseToWorldMap(p.pose), nil
+	}
 	if _, ok := cmd["get_dimensions"]; ok {
 		return p.dimsMap(), nil
 	}

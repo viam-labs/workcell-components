@@ -284,6 +284,14 @@ func (p *pickStation) DoCommand(_ context.Context, cmd map[string]interface{}) (
 	if _, ok := cmd["get_pose"]; ok {
 		return poseToWorldMap(p.pose), nil
 	}
+	if _, ok := cmd["get_visual_pose"]; ok {
+		// p.pose is the bottom-left-top corner (set in newPickStation
+		// to make box-origin offsets read naturally from the corner
+		// outward). The visual pose is the centroid — compose the
+		// inverse offset (+w/2, +l/2, -t/2) in local frame.
+		centerOffset := spatialmath.NewPoseFromPoint(r3.Vector{X: p.width / 2, Y: p.length / 2, Z: -p.thickness / 2})
+		return poseToWorldMap(spatialmath.Compose(p.pose, centerOffset)), nil
+	}
 	if _, ok := cmd["get_dimensions"]; ok {
 		return p.dimsMap(), nil
 	}

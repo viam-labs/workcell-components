@@ -373,6 +373,57 @@ func TestPickStationGetStatus(t *testing.T) {
 	}
 }
 
+// 0.5.0 — get_visual_pose for both components, used by workcell-scene
+// to find the geometry centroid for the viz.Box transform.
+
+func TestPalletGetVisualPose_IsCentroid(t *testing.T) {
+	// Pallet's p.pose is the centroid (Viam convention), so
+	// get_visual_pose == get_pose. Frame at zero pose, default
+	// dims — visual pose should be (0, 0, 0).
+	p := newPalletForTest(t, &PalletConfig{
+		WidthMM: 600, LengthMM: 400, ThicknessMM: 100,
+	})
+	resp, err := p.DoCommand(context.Background(), map[string]interface{}{"get_visual_pose": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if math.Abs(resp["x"].(float64)) > eps ||
+		math.Abs(resp["y"].(float64)) > eps ||
+		math.Abs(resp["z"].(float64)) > eps {
+		t.Errorf("pallet visual pose: got (%v, %v, %v), want (0, 0, 0)",
+			resp["x"], resp["y"], resp["z"])
+	}
+}
+
+func TestPickStationGetVisualPose_IsCentroidNotCorner(t *testing.T) {
+	// Pick-station's p.pose is the bottom-left-top corner (set in
+	// newPickStation for box-origin math convenience). get_visual_pose
+	// must undo that offset to return the centroid. Frame at zero
+	// pose; default dims 400×400×40. Corner pose at zero → corner is
+	// at (-200, -200, +20) relative to centroid; centroid is at
+	// (corner) + (+200, +200, -20) = (0, 0, 0).
+	ps := newPickStationForTest(t, &PickStationConfig{})
+	resp, err := ps.DoCommand(context.Background(), map[string]interface{}{"get_visual_pose": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Default dims 400×400×40. Frame at zero. corner_pose was set to
+	// (0 + (-200, -200, +20), identity), so corner is at (-200,-200,+20).
+	// Visual pose = corner + (+200, +200, -20) = (0, 0, 0).
+	if math.Abs(resp["x"].(float64)) > eps ||
+		math.Abs(resp["y"].(float64)) > eps ||
+		math.Abs(resp["z"].(float64)) > eps {
+		t.Errorf("pick-station visual pose: got (%v, %v, %v), want (0, 0, 0) (the centroid, not the corner)",
+			resp["x"], resp["y"], resp["z"])
+	}
+	// Sanity check the corner pose IS at the corner (so we know
+	// visual_pose != get_pose).
+	cornerResp, _ := ps.DoCommand(context.Background(), map[string]interface{}{"get_pose": true})
+	if math.Abs(cornerResp["x"].(float64)-(-200)) > eps {
+		t.Errorf("pick-station corner pose: got x=%v, want -200 (corner offset)", cornerResp["x"])
+	}
+}
+
 func contains(haystack, needle string) bool {
 	for i := 0; i+len(needle) <= len(haystack); i++ {
 		if haystack[i:i+len(needle)] == needle {
