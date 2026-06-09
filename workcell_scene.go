@@ -3,78 +3,104 @@ package workcellcomponents
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
-	"github.com/golang/geo/r3"
-	"github.com/viam-labs/viamkit/viz"
-	commonpb "go.viam.com/api/common/v1"
+	visuals "github.com/viam-labs/viam-viz-helpers-go"
 	"go.viam.com/rdk/components/generic"
 	"go.viam.com/rdk/logging"
 	"go.viam.com/rdk/resource"
 	"go.viam.com/rdk/services/worldstatestore"
-	"go.viam.com/rdk/spatialmath"
 )
 
 // WorkcellSceneModel is the rdk:service:world_state_store model that
-// publishes pallet and pick-station visuals as colored Box transforms
-// to the Viam 3D scene viewer. Bridges the gap that this RDK release
-// leaves open: `resource.Shaped` (which 0.3.0+ added) reaches the
-// motion planner but NOT the scene renderer. With a `workcell-scene`
-// service in the cell config, the pallet and pick-station finally
-// render visually — colored boxes at their configured poses, dims
-// pulled from each component's live state via DoCommand.
+// publishes the workcell's components (pallet, pick-station, and any
+// affordance components added later) as composed visuals to the Viam
+// 3D scene viewer.
 //
-// The service polls each configured component every `tick_interval_secs`
-// (default 1.0) and republishes when something changes. Pose and
-// dimension changes emit UPDATED (the renderer honors them). Color
-// changes emit REMOVED+ADDED with a rotated UUID — the renderer
-// silently drops metadata.* updates on plain UPDATE (see the
-// renderer-update-path-matcher memory note), so the UUID rotation is
-// the only reliable way to propagate a color change.
+// The service polls each configured component every
+// `tick_interval_secs` (default 1.0) and republishes when something
+// changes. It builds nothing locally: every visual entry comes from a
+// sibling component's `get_visuals` DoCommand response, which lets the
+// scene service stay type-agnostic — adding a new affordance component
+// requires zero changes here.
+//
+// Built on top of github.com/viam-labs/viam-viz-helpers-go: SceneServiceBase
+// handles the WSS gRPC plumbing (ListUUIDs / GetTransform /
+// StreamTransformChanges), the subscriber broadcast, the animation
+// tick loop, the standard DoCommand verbs (list / clear / snapshot /
+// apply_events), and the renderer's metadata-only-update quirk (the
+// library transparently issues REMOVE + re-ADD with a fresh UUID for
+// color / opacity changes — see [[feedback_renderer_update_path_matcher]]).
 //
 // Config (all fields optional):
 //
 //	{
-//	  "pallet_names":       ["pallet"],
-//	  "pick_station_names": ["pick-station"],
+//	  "component_names":    ["pallet", "pick-station", "fence-north", ...],
+//	  "pallet_names":       ["pallet"],         // deprecated alias
+//	  "pick_station_names": ["pick-station"],   // deprecated alias
 //	  "tick_interval_secs": 1.0
 //	}
 //
-// Components named in the config must be present in the cell config
-// before this service constructs (they're declared as required
-// dependencies via Validate).
+// Components named here must be present in the cell config and must
+// implement `get_visuals` via DoCommand (returns `{"visuals": [...]}`
+// — see visuals_wire.go for the entry shape).
 var WorkcellSceneModel = resource.NewModel("viam", "workcell-components", "workcell-scene")
 
 const (
 	defaultSceneTickIntervalSecs = 1.0
-	sceneSubscriberBufferSize    = 128
+	minSceneTickIntervalSecs     = 0.2 // clamp — don't hammer sibling DoCommand
+	defaultParentFrame           = "world"
+	defaultAnimationTickHz       = 30.0
 )
 
 // WorkcellSceneConfig is the persisted attribute shape.
 type WorkcellSceneConfig struct {
-	// PalletNames are the resource names of pallet components this
-	// scene should publish.
-	PalletNames []string `json:"pallet_names,omitempty"`
+	// ComponentNames lists the sibling generic components this scene
+	// publishes. Each must expose a `get_visuals` DoCommand verb.
+	ComponentNames []string `json:"component_names,omitempty"`
 
-	// PickStationNames are the resource names of pick-station
-	// components this scene should publish.
+	// PalletNames / PickStationNames are deprecated typed aliases —
+	// merged into ComponentNames at Validate time. Existing configs
+	// keep working; new configs should use ComponentNames.
+	PalletNames      []string `json:"pallet_names,omitempty"`
 	PickStationNames []string `json:"pick_station_names,omitempty"`
 
 	// TickIntervalSecs is the poll interval for republishing.
-	// Defaults to 1.0; values <0.2 are clamped up to avoid hammering
-	// the sibling components' DoCommand surfaces.
+	// Defaults to 1.0; clamped to [0.2, ∞).
 	TickIntervalSecs float64 `json:"tick_interval_secs,omitempty"`
 }
 
-func (c *WorkcellSceneConfig) Validate(_ string) ([]string, []string, error) {
-	// All declared components are required deps so the resource
-	// manager constructs them before us and we can call DoCommand.
-	deps := make([]string, 0, len(c.PalletNames)+len(c.PickStationNames))
+// allComponentNames returns the deduplicated union of ComponentNames
+// + the deprecated typed aliases, preserving the order of first
+// occurrence.
+func (c *WorkcellSceneConfig) allComponentNames() []string {
+	seen := map[string]bool{}
+	out := []string{}
+	add := func(name string) {
+		if name == "" || seen[name] {
+			return
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	for _, n := range c.ComponentNames {
+		add(n)
+	}
 	for _, n := range c.PalletNames {
-		deps = append(deps, generic.Named(n).String())
+		add(n)
 	}
 	for _, n := range c.PickStationNames {
+		add(n)
+	}
+	return out
+}
+
+func (c *WorkcellSceneConfig) Validate(_ string) ([]string, []string, error) {
+	names := c.allComponentNames()
+	deps := make([]string, 0, len(names))
+	for _, n := range names {
 		deps = append(deps, generic.Named(n).String())
 	}
 	return deps, nil, nil
@@ -88,55 +114,38 @@ func init() {
 	)
 }
 
+// workcellScene polls its configured sibling components every tick,
+// translates each component's `get_visuals` response into typed
+// visuals.Visual entries, and pushes the resulting deltas through
+// the embedded SceneServiceBase to subscribers (the 3D viewer).
+//
+// The visuals library tick loop runs in parallel on a faster cadence
+// (30 Hz default) to dispatch any per-Visual Animation specs the
+// components attached. Animation and poll updates share s.scene via
+// s.sceneMu.
 type workcellScene struct {
+	resource.Named
 	resource.AlwaysRebuild
+	visuals.SceneServiceBase
 
-	name   resource.Name
 	logger logging.Logger
 	cfg    WorkcellSceneConfig
 
 	// Component handles — resolved at construction. AlwaysRebuild
 	// cascades on dependency changes, so these stay current when a
-	// pallet or pick-station is reconfigured.
-	pallets      map[string]resource.Resource // name → component
-	pickStations map[string]resource.Resource
+	// sibling component is reconfigured.
+	sources map[string]resource.Resource // name → component
 
-	// Store-of-transforms with WSS plumbing wired in. We Set into it
-	// on construction + every tick; subscribers get the events via
-	// the embedded StreamTransformChanges path.
-	store *viz.Store
+	// sceneMu serializes access to s.SceneServiceBase.Scene between
+	// the poll loop (refresh — AddOrUpdate from sibling get_visuals)
+	// and the library's animation tick loop (SceneTick — mutates
+	// Visual pointers and calls scene.Update).
+	sceneMu sync.Mutex
 
-	// versions tracks the UUID rotation counter per component. We
-	// rotate UUIDs only on color changes (the renderer drops
-	// metadata.* updates silently); pose/dim changes go through plain
-	// UPDATE via store.Set with the same UUID.
-	mu       sync.Mutex
-	versions map[string]int
-	prevKey  map[string]sceneEntryKey // name → last-seen identity for diff
-
-	// Lifecycle for the tick goroutine.
+	// Lifecycle for the poll goroutine.
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
-}
-
-// sceneEntryKey is the per-component prior snapshot used for change
-// detection. Color changes drive a UUID rotation; pose+dim changes
-// drive a plain Set (which Store emits as UPDATED).
-type sceneEntryKey struct {
-	col  Color
-	uuid string
-}
-
-// sceneSnapshot is the per-component live data fetched on each tick.
-type sceneSnapshot struct {
-	name      string
-	uuid      string
-	pose      spatialmath.Pose
-	width     float64
-	length    float64
-	thickness float64
-	color     Color
 }
 
 func newWorkcellScene(
@@ -154,124 +163,101 @@ func newWorkcellScene(
 	if tick <= 0 {
 		tick = defaultSceneTickIntervalSecs
 	}
-	if tick < 0.2 {
-		tick = 0.2 // clamp — don't hammer sibling DoCommand
+	if tick < minSceneTickIntervalSecs {
+		tick = minSceneTickIntervalSecs
 	}
 
 	s := &workcellScene{
-		name:         conf.ResourceName(),
-		logger:       logger,
-		cfg:          *cfg,
-		pallets:      map[string]resource.Resource{},
-		pickStations: map[string]resource.Resource{},
-		store: viz.NewStore(
-			viz.WithChangeBufferSize(sceneSubscriberBufferSize),
-			viz.OnDropped(func(uuid string) {
-				logger.Warnw("workcell-scene: dropped change event (subscriber buffer full)", "uuid", uuid)
-			}),
-		),
-		versions: map[string]int{},
-		prevKey:  map[string]sceneEntryKey{},
+		Named:   conf.ResourceName().AsNamed(),
+		logger:  logger,
+		cfg:     *cfg,
+		sources: map[string]resource.Resource{},
 	}
+	s.SceneServiceBase.Logger = logger
+	s.SceneServiceBase.DefaultParentFrame = defaultParentFrame
+	s.SceneServiceBase.DefaultTickHz = defaultAnimationTickHz
+	s.SceneServiceBase.DefaultUUIDStrategy = "stable"
+	// Hooks = s so the library calls SceneTick on us; lets the library's
+	// animation tick loop drive Animation specs attached to component
+	// visuals (e.g. roller spin, stack-light flash).
+	s.SceneServiceBase.Hooks = s
 
 	// Resolve component dependencies.
-	for _, name := range cfg.PalletNames {
+	for _, name := range cfg.allComponentNames() {
 		r, err := resource.FromDependencies[resource.Resource](deps, generic.Named(name))
 		if err != nil {
-			return nil, fmt.Errorf("pallet %q: %w", name, err)
+			return nil, fmt.Errorf("component %q: %w", name, err)
 		}
-		s.pallets[name] = r
-	}
-	for _, name := range cfg.PickStationNames {
-		r, err := resource.FromDependencies[resource.Resource](deps, generic.Named(name))
-		if err != nil {
-			return nil, fmt.Errorf("pick-station %q: %w", name, err)
-		}
-		s.pickStations[name] = r
+		s.sources[name] = r
 	}
 
-	// Initial publish — populate the store so renderer connects see
-	// the slabs immediately. Don't fail construction on transient
-	// component errors; tick loop will retry.
-	if err := s.refresh(ctx); err != nil {
-		logger.Warnw("workcell-scene: initial refresh failed", "error", err)
+	// Initial poll — populate the scene so subscribers connecting
+	// immediately after construction see the workcell, not an empty
+	// world. Don't fail construction on transient errors; the poll
+	// loop will retry.
+	//
+	// SetScene (not ReconfigureWith) is critical — it sets
+	// s.SceneServiceBase.Scene + baseVisuals, which the library's
+	// animation tick loop requires to dispatch Spin / Pulse / Flicker
+	// animations on Visuals returned by components.
+	initialVisuals := s.collectInitialVisuals(ctx)
+	if err := s.SceneServiceBase.SetScene(
+		visuals.SetSceneOpts{
+			TickHz:       defaultAnimationTickHz,
+			UUIDStrategy: "stable",
+			ParentFrame:  defaultParentFrame,
+		},
+		visualsAsInterfaceSlice(initialVisuals)...,
+	); err != nil {
+		return nil, fmt.Errorf("workcell-scene: SetScene: %w", err)
 	}
 
-	// Start the tick goroutine.
+	// Start the poll goroutine.
 	s.ctx, s.cancel = context.WithCancel(context.Background())
 	s.wg.Add(1)
-	tickInterval := time.Duration(tick * float64(time.Second))
-	go s.tickLoop(tickInterval)
+	go s.pollLoop(time.Duration(tick * float64(time.Second)))
 
 	logger.Infow("workcell-scene started",
-		"pallets", cfg.PalletNames,
-		"pick_stations", cfg.PickStationNames,
-		"tick_interval", tickInterval,
+		"components", cfg.allComponentNames(),
+		"tick_interval_secs", tick,
+		"initial_visuals", len(initialVisuals),
 	)
 	return s, nil
 }
 
-// Close stops the tick goroutine. Required for the resource.Resource
-// interface (worldstatestore.Service embeds it).
-func (s *workcellScene) Close(_ context.Context) error {
+// SceneTick implements visuals.SceneTicker. Delegates to the library's
+// DefaultSceneTick so any Visual whose Animation field is set (Spin,
+// Pulse, Flicker, ...) ticks automatically. Components contribute
+// animations by attaching them in their `get_visuals` response.
+func (s *workcellScene) SceneTick(scene *visuals.Scene, t float64) []visuals.SceneEvent {
+	s.sceneMu.Lock()
+	defer s.sceneMu.Unlock()
+	return s.SceneServiceBase.DefaultSceneTick(scene, t)
+}
+
+// Close stops the poll goroutine and the SceneServiceBase tick loop.
+func (s *workcellScene) Close(ctx context.Context) error {
 	if s.cancel != nil {
 		s.cancel()
 	}
 	s.wg.Wait()
-	return nil
+	return s.SceneServiceBase.Close(ctx)
 }
 
-func (s *workcellScene) Name() resource.Name { return s.name }
-
-// ListUUIDs implements worldstatestore.Service via the embedded Store.
-func (s *workcellScene) ListUUIDs(ctx context.Context, extra map[string]any) ([][]byte, error) {
-	return s.store.ListUUIDs(ctx, extra)
-}
-
-// GetTransform implements worldstatestore.Service via the embedded Store.
-func (s *workcellScene) GetTransform(ctx context.Context, uuid []byte, extra map[string]any) (*commonpb.Transform, error) {
-	return s.store.GetTransform(ctx, uuid, extra)
-}
-
-// StreamTransformChanges implements worldstatestore.Service via the
-// embedded Store.
-func (s *workcellScene) StreamTransformChanges(ctx context.Context, extra map[string]any) (*worldstatestore.TransformChangeStream, error) {
-	return s.store.StreamTransformChanges(ctx, extra)
-}
-
-// DoCommand exposes diagnostic verbs for the operator UI:
-//
-//	{"refresh": true}  → manual re-poll of all components (returns
-//	                     {"refreshed": N})
-//	{"len":     true}  → number of transforms currently published
-//	{"list":    true}  → {"uuids": [...]} list of current transform UUIDs
-func (s *workcellScene) DoCommand(ctx context.Context, cmd map[string]interface{}) (map[string]interface{}, error) {
+// DoCommand disambiguates between resource.Named's DoCommand and
+// SceneServiceBase.DoCommand, then adds our own `refresh` verb for
+// the operator UI.
+func (s *workcellScene) DoCommand(ctx context.Context, cmd map[string]any) (map[string]any, error) {
 	if _, ok := cmd["refresh"]; ok {
-		if err := s.refresh(ctx); err != nil {
-			return nil, err
-		}
-		return map[string]interface{}{"refreshed": s.store.Len()}, nil
+		s.refresh(ctx)
+		return map[string]any{"refreshed": s.SceneServiceBase.State() != nil}, nil
 	}
-	if _, ok := cmd["len"]; ok {
-		return map[string]interface{}{"count": s.store.Len()}, nil
-	}
-	if _, ok := cmd["list"]; ok {
-		uuids, err := s.store.ListUUIDs(ctx, nil)
-		if err != nil {
-			return nil, err
-		}
-		out := make([]string, 0, len(uuids))
-		for _, u := range uuids {
-			out = append(out, string(u))
-		}
-		return map[string]interface{}{"uuids": out}, nil
-	}
-	return nil, fmt.Errorf("workcell-scene: unknown command %v", cmd)
+	return s.SceneServiceBase.DoCommand(ctx, cmd)
 }
 
-// tickLoop polls each component on a ticker and republishes when
-// anything changes. Exits on context cancel.
-func (s *workcellScene) tickLoop(interval time.Duration) {
+// pollLoop polls every component on a ticker and republishes changes.
+// Exits on context cancel.
+func (s *workcellScene) pollLoop(interval time.Duration) {
 	defer s.wg.Done()
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -280,160 +266,164 @@ func (s *workcellScene) tickLoop(interval time.Duration) {
 		case <-s.ctx.Done():
 			return
 		case <-ticker.C:
-			if err := s.refresh(s.ctx); err != nil {
-				s.logger.Warnw("workcell-scene tick: refresh failed", "error", err)
-			}
+			s.refresh(s.ctx)
 		}
 	}
 }
 
-// refresh polls every configured component, builds a viz.Box per
-// component, and pushes changes through the store.
-func (s *workcellScene) refresh(ctx context.Context) error {
-	snaps := make([]sceneSnapshot, 0, len(s.pallets)+len(s.pickStations))
+// refresh polls every configured component, builds the new Visual set,
+// diffs it against the library-managed Scene, and pushes the resulting
+// events through SceneServiceBase.apply_events for broadcast.
+//
+// Operates on s.SceneServiceBase.Scene (populated by SetScene) rather
+// than a private Scene — keeps animation dispatch live: the library's
+// tick loop reads from the same Scene and mutates Visual pointers in
+// place, so a poll-driven pose change (operator moved a sibling) and
+// a tick-driven animation (roller spin) stack cleanly.
+//
+// Also reaps orphan labels — when a component's get_visuals response
+// stops including a label (style switch, visibility toggle, count
+// change), the label is removed from the scene. Reaping only happens
+// for labels whose owning component polled SUCCESSFULLY this tick; a
+// transient DoCommand failure leaves the prior labels in place.
+func (s *workcellScene) refresh(ctx context.Context) {
+	results := s.pollAllComponents(ctx)
 
-	for name, r := range s.pallets {
-		snap, err := s.pollComponent(ctx, name, r, "pallet")
-		if err != nil {
-			s.logger.Warnw("workcell-scene: pallet poll failed", "name", name, "error", err)
+	// Build set of (owner -> polled-OK) and (label -> present) for
+	// the orphan-reaping step. Owner = label prefix before "/" (every
+	// visual builder in this module namespaces its output as
+	// "{component-name}/{kind-id}").
+	polledOK := make(map[string]bool, len(results))
+	presentLabels := make(map[string]bool)
+	var newVisuals []visuals.Visual
+	for _, r := range results {
+		if r.err != nil {
 			continue
 		}
-		snaps = append(snaps, snap)
-	}
-	for name, r := range s.pickStations {
-		snap, err := s.pollComponent(ctx, name, r, "pick-station")
-		if err != nil {
-			s.logger.Warnw("workcell-scene: pick-station poll failed", "name", name, "error", err)
-			continue
+		polledOK[r.componentName] = true
+		for _, v := range r.visuals {
+			presentLabels[v.ToItem().Label] = true
+			newVisuals = append(newVisuals, v)
 		}
-		snaps = append(snaps, snap)
 	}
 
-	for _, snap := range snaps {
-		s.applySnapshot(snap)
-	}
-	return nil
-}
+	s.sceneMu.Lock()
+	defer s.sceneMu.Unlock()
 
-// pollComponent issues two DoCommand calls — one for get_visual_pose
-// (the centroid pose suitable for a viz.Box) and one for get_attributes
-// (dims + color) — and returns the snapshot.
-func (s *workcellScene) pollComponent(ctx context.Context, name string, r resource.Resource, kind string) (sceneSnapshot, error) {
-	poseResp, err := r.DoCommand(ctx, map[string]interface{}{"get_visual_pose": true})
-	if err != nil {
-		return sceneSnapshot{}, fmt.Errorf("get_visual_pose: %w", err)
-	}
-	attrResp, err := r.DoCommand(ctx, map[string]interface{}{"get_attributes": true})
-	if err != nil {
-		return sceneSnapshot{}, fmt.Errorf("get_attributes: %w", err)
-	}
-
-	pose := poseFromAttrMap(poseResp)
-	width := asFloat(attrResp["width_mm"])
-	length := asFloat(attrResp["length_mm"])
-	thickness := asFloat(attrResp["thickness_mm"])
-	color := colorFromAttrMap(attrResp["color"])
-
-	if width <= 0 || length <= 0 || thickness <= 0 {
-		return sceneSnapshot{}, fmt.Errorf("%s %q: invalid dims (%vx%vx%v)", kind, name, width, length, thickness)
-	}
-
-	s.mu.Lock()
-	uuid := s.uuidForLocked(name, color)
-	s.mu.Unlock()
-
-	return sceneSnapshot{
-		name:      name,
-		uuid:      uuid,
-		pose:      pose,
-		width:     width,
-		length:    length,
-		thickness: thickness,
-		color:     color,
-	}, nil
-}
-
-// applySnapshot diffs against the prior snapshot for this name and
-// emits the appropriate event(s) through the store. Color changes
-// trigger a UUID rotation (REMOVED old + ADDED new); pose/dim
-// changes go through plain Set (UPDATED) with the same UUID.
-func (s *workcellScene) applySnapshot(snap sceneSnapshot) {
-	s.mu.Lock()
-	prev, hadPrev := s.prevKey[snap.name]
-	colorChanged := hadPrev && prev.col != snap.color
-	if colorChanged {
-		oldUUID := prev.uuid
-		s.prevKey[snap.name] = sceneEntryKey{col: snap.color, uuid: snap.uuid}
-		s.mu.Unlock()
-
-		s.store.Remove(oldUUID)
-		s.store.Set(s.buildTransform(snap))
+	if s.SceneServiceBase.Scene == nil {
+		// SetScene never ran — shouldn't happen, but guard against
+		// nil-deref before the animation tick loop catches up.
 		return
 	}
-	s.prevKey[snap.name] = sceneEntryKey{col: snap.color, uuid: snap.uuid}
-	s.mu.Unlock()
 
-	// Pose/dim change OR initial add — Set will emit ADDED or UPDATED
-	// as appropriate (Store keys by UUID; new UUID = ADDED, same UUID
-	// = UPDATED).
-	s.store.Set(s.buildTransform(snap))
+	// Reap orphans: labels currently in the scene whose OWNER polled
+	// successfully this tick but didn't include them in the response.
+	var orphans []string
+	for _, label := range s.SceneServiceBase.Scene.Labels() {
+		if presentLabels[label] {
+			continue
+		}
+		owner, ok := ownerOfLabel(label)
+		if !ok {
+			continue // unnamespaced — leave alone
+		}
+		if !polledOK[owner] {
+			continue // owner's poll failed this tick — keep its labels
+		}
+		orphans = append(orphans, label)
+	}
+
+	var allEvents []visuals.SceneEvent
+	for _, label := range orphans {
+		allEvents = append(allEvents, s.SceneServiceBase.Scene.Remove(label)...)
+	}
+	if len(newVisuals) > 0 {
+		events, err := s.SceneServiceBase.Scene.AddOrUpdate(visualsAsInterfaceSlice(newVisuals)...)
+		if err != nil {
+			s.logger.Warnw("workcell-scene: AddOrUpdate failed", "error", err)
+		} else {
+			allEvents = append(allEvents, events...)
+		}
+	}
+
+	if len(allEvents) == 0 {
+		return
+	}
+
+	wire := visuals.EventsToWire(allEvents)
+	wireAny := make([]any, len(wire))
+	for i, w := range wire {
+		wireAny[i] = w
+	}
+	if _, err := s.SceneServiceBase.DoCommand(ctx, map[string]any{
+		"command": "apply_events",
+		"events":  wireAny,
+	}); err != nil {
+		s.logger.Warnw("workcell-scene: apply_events failed", "error", err)
+	}
 }
 
-func (s *workcellScene) buildTransform(snap sceneSnapshot) *commonpb.Transform {
-	c := viz.Color{R: snap.color.R, G: snap.color.G, B: snap.color.B, Opacity: snap.color.effectiveOpacity()}
-	return viz.Box{
-		UUID:          snap.uuid,
-		ObserverFrame: "world",
-		Pose:          snap.pose,
-		DimsMM:        r3.Vector{X: snap.width, Y: snap.length, Z: snap.thickness},
-		Color:         c,
-		Label:         snap.name,
-	}.ToTransform()
+// ownerOfLabel returns the prefix before the first "/" in a visual
+// label — the convention `{component-name}/{kind-id}` every visual
+// builder in this module uses. Returns ok=false for labels without
+// a "/" so reaping skips them (defensive — third-party components
+// might emit unnamespaced labels).
+func ownerOfLabel(label string) (string, bool) {
+	if i := strings.Index(label, "/"); i > 0 {
+		return label[:i], true
+	}
+	return "", false
 }
 
-// uuidForLocked returns the current UUID for a component, rotating
-// it if the color has changed since the last snapshot. Caller must
-// hold s.mu.
-func (s *workcellScene) uuidForLocked(name string, color Color) string {
-	prev, ok := s.prevKey[name]
-	if !ok {
-		// First time we've seen this component — uuid = name.
-		return name
-	}
-	if prev.col == color {
-		// No color change; keep the prior UUID.
-		return prev.uuid
-	}
-	// Color changed — rotate.
-	s.versions[name]++
-	return fmt.Sprintf("%s-v%d", name, s.versions[name])
+// pollResult captures one component's get_visuals outcome — the
+// parsed Visual list when polling succeeded, or err non-nil when it
+// failed. The orphan-reaping step uses err to decide whether to trust
+// the absence of a label.
+type pollResult struct {
+	componentName string
+	visuals       []visuals.Visual
+	err           error
 }
 
-// --- helpers -----------------------------------------------------------
-
-// poseFromAttrMap reconstructs a spatialmath.Pose from the
-// {x,y,z,o_x,o_y,o_z,theta} shape returned by get_pose/get_visual_pose.
-func poseFromAttrMap(m map[string]interface{}) spatialmath.Pose {
-	return spatialmath.NewPose(
-		r3.Vector{X: asFloat(m["x"]), Y: asFloat(m["y"]), Z: asFloat(m["z"])},
-		&spatialmath.OrientationVectorDegrees{
-			OX: asFloat(m["o_x"]), OY: asFloat(m["o_y"]),
-			OZ: asFloat(m["o_z"]), Theta: asFloat(m["theta"]),
-		},
-	)
+// pollAllComponents polls each configured component's get_visuals
+// DoCommand verb in sequence and returns the parsed results.
+func (s *workcellScene) pollAllComponents(ctx context.Context) []pollResult {
+	results := make([]pollResult, 0, len(s.sources))
+	for name, r := range s.sources {
+		resp, err := r.DoCommand(ctx, map[string]interface{}{"get_visuals": true})
+		if err != nil {
+			s.logger.Warnw("workcell-scene: get_visuals failed", "name", name, "error", err)
+			results = append(results, pollResult{componentName: name, err: err})
+			continue
+		}
+		entries := coerceWireVisualsSlice(resp["visuals"])
+		vs := make([]visuals.Visual, 0, len(entries))
+		for i, m := range entries {
+			v, parseErr := wireToVisual(m)
+			if parseErr != nil {
+				s.logger.Warnw("workcell-scene: wireToVisual failed",
+					"name", name, "index", i, "error", parseErr)
+				continue
+			}
+			vs = append(vs, v)
+		}
+		results = append(results, pollResult{componentName: name, visuals: vs})
+	}
+	return results
 }
 
-// colorFromAttrMap reads a Color out of an attributes map's "color"
-// sub-object. Returns zero Color if missing.
-func colorFromAttrMap(v interface{}) Color {
-	m, ok := v.(map[string]interface{})
-	if !ok {
-		return Color{}
+// collectInitialVisuals issues `get_visuals` to every configured
+// component for the SetScene call at construction. Errors on a single
+// component are logged and skipped — one broken sibling shouldn't
+// prevent the rest of the workcell from rendering. The poll loop
+// retries via pollAllComponents.
+func (s *workcellScene) collectInitialVisuals(ctx context.Context) []visuals.Visual {
+	out := make([]visuals.Visual, 0, len(s.sources))
+	for _, r := range s.pollAllComponents(ctx) {
+		if r.err != nil {
+			continue
+		}
+		out = append(out, r.visuals...)
 	}
-	return Color{
-		R: int(asFloat(m["r"])),
-		G: int(asFloat(m["g"])),
-		B: int(asFloat(m["b"])),
-		A: asFloat(m["opacity"]),
-	}
+	return out
 }

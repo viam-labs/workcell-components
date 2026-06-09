@@ -1,0 +1,1152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Workcell Tuner</title>
+
+  <!--
+    Workcell Tuner — schema-driven editor for viam:workcell-components.
+
+    Fully dynamic: nothing about the component models is hardcoded. On
+    connect the app calls robot.resourceNames(), probes every generic
+    component with `get_schema`, and builds an edit form from whatever
+    schema each one returns. `get_visuals` feeds a live Three.js preview.
+
+      resourceNames → get_schema (duck-typed discovery) → get_status
+      → get_attributes → get_visuals → render module + 3D preview
+      → edit → Apply (set_attributes) / Reset / Cancel
+  -->
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Saira:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+
+  <style>
+    :root {
+      --void: #f6f7f9;
+      --panel: #ffffff;
+      --panel-2: #f3f4f6;
+      --raised: #eef0f3;
+      --line: #e4e6ea;
+      --line-bright: #ccd0d7;
+      --ink: #1d2228;
+      --ink-dim: #5b6573;
+      --ink-faint: #97a0ac;
+      --amber: #e0920f;
+      --amber-deep: #b9760a;
+      --cyan: #117f8c;
+      --ok: #1f9b4e;
+      --bad: #d23b2b;
+      --r: 3px;
+      --font-d: "Saira", system-ui, sans-serif;
+      --font-m: "IBM Plex Mono", ui-monospace, monospace;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      font-family: var(--font-d);
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 1px 1px, rgba(22,30,46,.05) 1px, transparent 0) 0 0 / 26px 26px,
+        linear-gradient(180deg, #eef0f3 0%, #e7e9ee 62%);
+      background-attachment: fixed;
+      -webkit-font-smoothing: antialiased;
+    }
+    ::selection { background: var(--amber); color: #000; }
+
+    /* ---- top bar ---------------------------------------------------- */
+    .topbar {
+      position: sticky; top: 0; z-index: 20;
+      display: flex; align-items: center; gap: 18px;
+      padding: 14px 26px;
+      background: linear-gradient(180deg, rgba(255,255,255,.97), rgba(255,255,255,.84));
+      backdrop-filter: blur(8px);
+      border-bottom: 1px solid var(--line);
+    }
+    .brand { display: flex; align-items: center; gap: 11px; }
+    .brand__mark {
+      width: 22px; height: 22px; border-radius: 2px;
+      background: linear-gradient(135deg, var(--amber), var(--amber-deep));
+      box-shadow: 0 0 14px rgba(255,180,61,.45);
+      position: relative; flex: none;
+    }
+    .brand__mark::after {
+      content: ""; position: absolute; inset: 6px;
+      border: 2px solid #f4f5f7; border-radius: 1px;
+    }
+    .brand__title {
+      font-weight: 700; font-size: 17px; letter-spacing: .26em;
+      text-transform: uppercase; margin: 0;
+    }
+    .brand__title b { color: var(--amber); font-weight: 700; }
+    .brand__ver {
+      font-family: var(--font-m); font-size: 10px; color: var(--ink-faint);
+      letter-spacing: .04em; margin-left: 2px;
+    }
+    .topbar__spacer { flex: 1; }
+    .lamp {
+      display: flex; align-items: center; gap: 9px;
+      font-family: var(--font-m); font-size: 11.5px; letter-spacing: .03em;
+      color: var(--ink-dim);
+    }
+    .lamp__dot {
+      width: 9px; height: 9px; border-radius: 50%;
+      background: var(--ink-faint); flex: none;
+      transition: background .25s, box-shadow .25s;
+    }
+    .lamp.is-connecting .lamp__dot { background: var(--amber); box-shadow: 0 0 10px var(--amber); animation: pulse 1.1s infinite; }
+    .lamp.is-ok   .lamp__dot { background: var(--ok);   box-shadow: 0 0 10px var(--ok); }
+    .lamp.is-err  .lamp__dot { background: var(--bad);  box-shadow: 0 0 10px var(--bad); }
+    .lamp.is-err  { color: var(--bad); }
+    @keyframes pulse { 50% { opacity: .35; } }
+
+    .btn {
+      font-family: var(--font-d); font-size: 12px; font-weight: 600;
+      letter-spacing: .09em; text-transform: uppercase;
+      padding: 8px 15px; border-radius: var(--r); cursor: pointer;
+      border: 1px solid var(--line-bright); background: var(--raised); color: var(--ink);
+      transition: background .15s, border-color .15s, color .15s, transform .05s;
+    }
+    .btn:hover:not(:disabled) { border-color: var(--ink-dim); background: #e7e9ed; }
+    .btn:active:not(:disabled) { transform: translateY(1px); }
+    .btn:disabled { opacity: .34; cursor: not-allowed; }
+    .btn--primary {
+      background: linear-gradient(180deg, var(--amber), var(--amber-deep));
+      border-color: var(--amber-deep); color: #20160a;
+    }
+    .btn--primary:hover:not(:disabled) { background: var(--amber); border-color: var(--amber); }
+    .btn--ghost { background: transparent; }
+    .btn--sm { padding: 5px 10px; font-size: 10.5px; letter-spacing: .07em; }
+
+    /* machine-name button → links to the machine's config in the Viam app */
+    .machine-btn {
+      display: flex; align-items: center; gap: 7px;
+      font-family: var(--font-d); font-size: 12.5px; font-weight: 600;
+      letter-spacing: .03em;
+      padding: 7px 13px; border-radius: var(--r);
+      border: 1px solid var(--line-bright); background: var(--raised);
+      color: var(--ink); text-decoration: none;
+      transition: border-color .15s, background .15s;
+    }
+    .machine-btn:not(.machine-btn--nolink):hover { border-color: var(--amber); background: #fff; }
+    .machine-btn__cog { color: var(--amber); font-size: 13px; line-height: 1; }
+    .machine-btn--nolink { opacity: .55; cursor: default; }
+
+    /* ---- layout ----------------------------------------------------- */
+    .wrap { max-width: 1180px; margin: 0 auto; padding: 24px 26px 80px; }
+    .summary {
+      font-family: var(--font-m); font-size: 12px; color: var(--ink-dim);
+      margin: 4px 0 22px; display: flex; align-items: center; gap: 10px;
+    }
+    .summary .tag {
+      color: var(--amber); border: 1px solid var(--line-bright);
+      padding: 1px 7px; border-radius: 2px; font-size: 11px;
+    }
+    .grouphdr {
+      display: flex; align-items: center; gap: 14px;
+      margin: 30px 0 14px;
+    }
+    .grouphdr h2 {
+      font-family: var(--font-m); font-size: 12px; font-weight: 600;
+      letter-spacing: .2em; text-transform: uppercase;
+      color: var(--ink); margin: 0; white-space: nowrap;
+    }
+    .grouphdr .count { font-family: var(--font-m); font-size: 11px; color: var(--ink-faint); }
+    .grouphdr .rule { flex: 1; height: 1px; background: linear-gradient(90deg, var(--line-bright), transparent); }
+
+    /* ---- module card ------------------------------------------------ */
+    .module {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 5px;
+      margin-bottom: 16px;
+      overflow: hidden;
+      box-shadow: 0 1px 2px rgba(22,30,46,.06), 0 10px 26px -20px rgba(22,30,46,.4);
+      animation: rise .5s cubic-bezier(.2,.7,.2,1) both;
+    }
+    /* opacity:0 lives in the keyframe, not the base rule — so a rebuilt
+       card with animation:none stays visible instead of vanishing. */
+    @keyframes rise {
+      from { opacity: 0; transform: translateY(10px); }
+      to   { opacity: 1; transform: none; }
+    }
+    .module.is-dirty { border-color: var(--amber-deep); }
+
+    .module__bar {
+      display: flex; align-items: center; gap: 12px;
+      padding: 13px 18px;
+      background: linear-gradient(180deg, var(--panel-2), var(--panel));
+      border-bottom: 1px solid var(--line);
+    }
+    .module__idx {
+      font-family: var(--font-m); font-size: 11px; color: var(--ink-faint);
+      border: 1px solid var(--line); border-radius: 2px;
+      padding: 3px 6px; flex: none;
+    }
+    .module__name {
+      font-size: 17px; font-weight: 600; letter-spacing: .01em;
+    }
+    .module__model {
+      font-family: var(--font-m); font-size: 11px; color: var(--ink-faint);
+    }
+    .module__bar-spacer { flex: 1; }
+    .chip {
+      font-family: var(--font-m); font-size: 10px; font-weight: 600;
+      letter-spacing: .12em; text-transform: uppercase;
+      padding: 3px 8px; border-radius: 2px;
+      border: 1px solid transparent; opacity: 0; transition: opacity .2s;
+    }
+    .chip--dirty { color: var(--amber); border-color: var(--amber-deep); background: rgba(255,180,61,.08); }
+    .module.is-dirty .chip--dirty { opacity: 1; }
+
+    .module__body { display: grid; grid-template-columns: 1fr 336px; }
+    @media (max-width: 800px) { .module__body { grid-template-columns: 1fr; } }
+
+    .module__form { padding: 18px 20px 20px; }
+    .fset { margin-bottom: 16px; }
+    .fset:last-child { margin-bottom: 0; }
+    .fset__lbl {
+      display: flex; align-items: center; gap: 10px;
+      font-family: var(--font-m); font-size: 10px; font-weight: 600;
+      letter-spacing: .18em; text-transform: uppercase; color: var(--cyan);
+      margin-bottom: 11px;
+    }
+    .fset__lbl::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+
+    .grid {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+      gap: 13px 16px; align-items: start;
+    }
+    .field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+    .field--wide { grid-column: 1 / -1; }
+    /* boolean fields: label + switch boxed together so it's unambiguous
+       which switch belongs to which label. The whole box is clickable. */
+    .boolbox {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 10px; cursor: pointer;
+      background: var(--void);
+      border: 1px solid var(--line-bright);
+      border-radius: var(--r);
+      padding: 10px 11px;
+      transition: border-color .14s;
+    }
+    .boolbox:hover { border-color: var(--ink-faint); }
+    .boolbox .field__lbl { user-select: none; }
+    .field > label, .field__lbl {
+      font-family: var(--font-m); font-size: 10.5px; letter-spacing: .04em;
+      color: var(--ink-dim); text-transform: uppercase;
+    }
+    .field .help {
+      font-size: 11px; color: var(--ink-faint); font-family: var(--font-d);
+      text-transform: none; letter-spacing: 0; line-height: 1.4;
+    }
+    /* a field whose `when` condition is unmet: dimmed + an inline note,
+       but still editable so its value is ready when the condition flips */
+    .field--off { opacity: .52; }
+    .field__cond {
+      display: none;
+      font-family: var(--font-m); font-size: 10px; color: var(--amber-deep);
+      letter-spacing: .01em; line-height: 1.35;
+    }
+    .field--off .field__cond { display: block; }
+
+    .inp, .num input, .vec3 input, .sel select {
+      width: 100%; font-family: var(--font-m); font-size: 13px;
+      color: var(--ink); background: var(--void);
+      border: 1px solid var(--line-bright); border-radius: var(--r);
+      padding: 8px 9px; outline: none;
+      transition: border-color .14s, box-shadow .14s;
+    }
+    .inp:focus, .num input:focus, .vec3 input:focus, .sel select:focus {
+      border-color: var(--amber);
+      box-shadow: 0 0 0 3px rgba(224,146,15,.24);
+    }
+    input[type=number]::-webkit-inner-spin-button { opacity: .35; }
+
+    .num { position: relative; }
+    .num input { padding-right: 38px; }
+    .num__unit {
+      position: absolute; right: 1px; top: 1px; bottom: 1px;
+      display: flex; align-items: center; padding: 0 9px;
+      font-family: var(--font-m); font-size: 10px; color: var(--ink-faint);
+      background: var(--panel-2); border-left: 1px solid var(--line);
+      border-radius: 0 var(--r) var(--r) 0; pointer-events: none;
+    }
+
+    .sel { position: relative; }
+    .sel select { appearance: none; padding-right: 30px; cursor: pointer; }
+    .sel::after {
+      content: ""; position: absolute; right: 12px; top: 50%;
+      width: 7px; height: 7px; border-right: 2px solid var(--ink-dim);
+      border-bottom: 2px solid var(--ink-dim);
+      transform: translateY(-65%) rotate(45deg); pointer-events: none;
+    }
+
+    /* toggle switch */
+    .tgl { position: relative; width: 42px; height: 22px; flex: none; cursor: pointer; }
+    .tgl input { position: absolute; opacity: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; }
+    .tgl__track {
+      position: absolute; inset: 0; border-radius: 11px;
+      background: var(--void); border: 1px solid var(--line-bright);
+      transition: background .18s, border-color .18s;
+    }
+    .tgl__track::before {
+      content: ""; position: absolute; left: 3px; top: 3px;
+      width: 14px; height: 14px; border-radius: 50%;
+      background: var(--ink-dim); transition: transform .18s, background .18s;
+    }
+    .tgl input:checked + .tgl__track { background: rgba(255,180,61,.2); border-color: var(--amber-deep); }
+    .tgl input:checked + .tgl__track::before { transform: translateX(20px); background: var(--amber); }
+
+    /* color swatch */
+    .swatch {
+      width: 100%; height: 34px; padding: 0; cursor: pointer;
+      border: 1px solid var(--line-bright); border-radius: var(--r);
+      background: var(--void);
+    }
+    .swatch::-webkit-color-swatch-wrapper { padding: 3px; }
+    .swatch::-webkit-color-swatch { border: none; border-radius: 1px; }
+    .swatch:focus { border-color: var(--amber); box-shadow: 0 0 0 3px rgba(224,146,15,.24); }
+
+    /* vec3 */
+    .vec3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+    .vec3 label { display: flex; flex-direction: column; gap: 3px; }
+    .vec3 .ax {
+      font-family: var(--font-m); font-size: 9px; color: var(--ink-faint);
+      letter-spacing: .1em; text-transform: uppercase; padding-left: 2px;
+    }
+
+    /* enum list */
+    .enumlist { display: flex; flex-direction: column; gap: 6px; }
+    .enumlist__row { display: flex; gap: 6px; align-items: center; }
+    .enumlist__row .sel { flex: 1; }
+    .enumlist__row .x {
+      flex: none; width: 28px; height: 34px; cursor: pointer;
+      border: 1px solid var(--line-bright); border-radius: var(--r);
+      background: var(--void); color: var(--ink-faint); font-size: 14px;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .enumlist__row .x:hover { color: var(--bad); border-color: var(--bad); }
+    .enumlist__add { align-self: flex-start; }
+
+    /* ---- viewport --------------------------------------------------- */
+    .viewport {
+      position: relative;
+      border-left: 1px solid var(--line);
+      background:
+        radial-gradient(ellipse at 50% 36%, #ffffff 0%, #e3e7ed 82%);
+      display: flex; flex-direction: column;
+    }
+    .viewport__head {
+      display: flex; align-items: center; gap: 8px;
+      padding: 9px 13px; border-bottom: 1px solid var(--line);
+      font-family: var(--font-m); font-size: 10px; letter-spacing: .14em;
+      text-transform: uppercase; color: var(--ink-dim);
+    }
+    .viewport__head .dot {
+      width: 6px; height: 6px; border-radius: 50%; background: var(--cyan);
+      box-shadow: 0 0 8px var(--cyan);
+    }
+    .viewport__head .sp { flex: 1; }
+    .viewport__stage { position: relative; height: 252px; }
+    .viewport__canvas {
+      position: absolute; inset: 0; width: 100%; height: 100%;
+      cursor: grab; display: block;
+    }
+    .viewport__canvas:active { cursor: grabbing; }
+    /* CAD-style corner brackets */
+    .viewport__stage::before, .viewport__stage::after,
+    .viewport__bl, .viewport__br {
+      content: ""; position: absolute; width: 13px; height: 13px;
+      border: 1.5px solid rgba(17,127,140,.6); pointer-events: none; z-index: 2;
+    }
+    .viewport__stage::before { top: 9px; left: 9px; border-right: 0; border-bottom: 0; }
+    .viewport__stage::after  { top: 9px; right: 9px; border-left: 0; border-bottom: 0; }
+    .viewport__bl { bottom: 9px; left: 9px; border-right: 0; border-top: 0; }
+    .viewport__br { bottom: 9px; right: 9px; border-left: 0; border-top: 0; }
+    .viewport__hint {
+      position: absolute; bottom: 11px; left: 0; right: 0; z-index: 2;
+      text-align: center; font-family: var(--font-m); font-size: 9.5px;
+      letter-spacing: .08em; color: var(--ink-faint); pointer-events: none;
+    }
+    .viewport__none {
+      position: absolute; inset: 0; display: flex; align-items: center;
+      justify-content: center; font-family: var(--font-m); font-size: 11px;
+      color: var(--ink-faint);
+    }
+
+    /* ---- footer ----------------------------------------------------- */
+    .module__foot {
+      display: flex; align-items: center; gap: 10px;
+      padding: 13px 18px;
+      border-top: 1px solid var(--line);
+      background: var(--panel-2);
+    }
+    .module__pose {
+      font-family: var(--font-m); font-size: 10.5px; color: var(--ink-faint);
+    }
+    .module__pose b { color: var(--ink-dim); font-weight: 500; }
+    .foot-spacer { flex: 1; }
+    .status {
+      font-family: var(--font-m); font-size: 11px; min-width: 0;
+      letter-spacing: .02em;
+    }
+    .status.ok  { color: var(--ok); }
+    .status.bad { color: var(--bad); }
+    .status.work { color: var(--amber); }
+
+    .empty {
+      text-align: center; padding: 60px 20px; color: var(--ink-faint);
+      font-family: var(--font-m); font-size: 13px;
+    }
+    .empty .big { display: block; font-size: 15px; color: var(--ink-dim); margin-bottom: 6px; }
+    code {
+      font-family: var(--font-m); font-size: .92em;
+      background: var(--raised); padding: 1px 5px; border-radius: 2px; color: var(--cyan);
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand__mark"></div>
+      <h1 class="brand__title">Workcell&nbsp;<b>Tuner</b></h1>
+      <span class="brand__ver">v<!--V-->0.6.0-rc5<!--/V--></span>
+    </div>
+    <div class="topbar__spacer"></div>
+    <div id="lamp" class="lamp is-connecting">
+      <span class="lamp__dot"></span><span id="lampText">Connecting…</span>
+    </div>
+    <button class="btn btn--ghost" id="reloadBtn">Reload</button>
+    <button class="btn btn--ghost" id="reconnectBtn">Reconnect</button>
+    <a class="machine-btn machine-btn--nolink" id="machineBtn" target="_blank" rel="noopener noreferrer">
+      <span class="machine-btn__cog">⚙</span><span id="machineBtnName">—</span>
+    </a>
+  </header>
+
+  <main class="wrap">
+    <div id="summary" class="summary"></div>
+    <div id="content"><div class="empty"><span class="big">Connecting to machine…</span></div></div>
+  </main>
+
+  <script type="module">
+    import * as VIAM from 'https://esm.sh/@viamrobotics/sdk@0.50.0';
+
+    // Three.js loads dynamically so a CDN hiccup degrades to "no preview"
+    // rather than killing the whole editor.
+    let THREE = null, OrbitControls = null;
+    const threeReady = (async () => {
+      try {
+        THREE = await import('three');
+        ({ OrbitControls } = await import('three/addons/controls/OrbitControls.js'));
+      } catch (e) {
+        console.warn('three.js failed to load — 3D previews disabled', e);
+        THREE = null;
+      }
+    })();
+
+    let robot = null;
+    // name -> { name, model, schema, attrs, visuals, client, kind, el, preview, dirty }
+    const INSTANCES = {};
+
+    // ===== connection ======================================================
+    function getCookie(name) {
+      const all = ('; ' + document.cookie).split('; ' + name + '=');
+      if (all.length < 2) return null;
+      return all.pop().split(';').shift();
+    }
+    function discoverCreds() {
+      const segments = window.location.pathname.split('/').filter(Boolean);
+      const machineKey = segments[1] || segments[0];
+      if (machineKey) {
+        const raw = getCookie(machineKey);
+        if (raw) {
+          try {
+            const p = JSON.parse(decodeURIComponent(raw));
+            return {
+              host: p.hostname || machineKey, apiKeyId: p.apiKey?.id, apiKey: p.apiKey?.key,
+              machineId: p.machineId || p.id || null, source: 'cookie',
+            };
+          } catch (e) { console.warn('cookie parse failed', e); }
+        }
+      }
+      const q = new URLSearchParams(window.location.search);
+      const host = q.get('machine_url') || q.get('host') || q.get('hostname') || machineKey || null;
+      const apiKey = q.get('api_key') || q.get('apiKey');
+      const apiKeyId = q.get('api_key_id') || q.get('apiKeyId');
+      const machineId = q.get('machine_id') || q.get('machineId') || null;
+      if (host && apiKey && apiKeyId) return { host, apiKey, apiKeyId, machineId, source: 'url-params' };
+      return { host: host || null, source: 'incomplete' };
+    }
+    // doCommand wants a protobuf Struct; a raw object silently drops fields.
+    function toStruct(c) {
+      return VIAM.Struct && VIAM.Struct.fromJson ? VIAM.Struct.fromJson(c) : c;
+    }
+
+    const lamp = document.getElementById('lamp');
+    const lampText = document.getElementById('lampText');
+    function setLamp(state, text) {
+      lamp.className = 'lamp is-' + state;
+      lampText.textContent = text;
+    }
+
+    // machineDisplayName: "workcell-visual-updates-main.pgn07.viam.cloud"
+    // → "workcell-visual-updates".
+    function machineDisplayName(host) {
+      if (!host) return 'machine';
+      return (host.split('.')[0] || host).replace(/-main$/, '') || host;
+    }
+
+    // setMachineButton points the top-right button at the machine's
+    // config page in the Viam app. Needs a machine id (from the launch
+    // cookie, or a &machine_id= URL param when testing locally).
+    function setMachineButton(creds) {
+      const btn = document.getElementById('machineBtn');
+      document.getElementById('machineBtnName').textContent = machineDisplayName(creds.host);
+      if (creds.machineId) {
+        btn.href = 'https://app.viam.com/machine/' + encodeURIComponent(creds.machineId);
+        btn.classList.remove('machine-btn--nolink');
+        btn.title = 'Open this machine’s config in the Viam app';
+      } else {
+        btn.removeAttribute('href');
+        btn.classList.add('machine-btn--nolink');
+        btn.title = 'Config link needs a machine id — append &machine_id=<id> to the URL';
+      }
+    }
+
+    async function connect() {
+      setLamp('connecting', 'Connecting…');
+      const creds = discoverCreds();
+      if (!creds.apiKey || !creds.apiKeyId || !creds.host) {
+        setLamp('err', 'No credentials');
+        document.getElementById('content').innerHTML =
+          '<div class="empty"><span class="big">Missing connection credentials</span>' +
+          'Open this app from the Viam app, or append ' +
+          '<code>?machine_url=&amp;api_key=&amp;api_key_id=</code> to the URL.</div>';
+        return;
+      }
+      try {
+        robot = await VIAM.createRobotClient({
+          host: creds.host,
+          credentials: { type: 'api-key', authEntity: creds.apiKeyId, payload: creds.apiKey },
+          signalingAddress: 'https://app.viam.com:443',
+        });
+        setLamp('ok', 'Connected');
+        setMachineButton(creds);
+        await reloadAll();
+      } catch (e) {
+        setLamp('err', 'Connection failed');
+        document.getElementById('content').innerHTML =
+          '<div class="empty"><span class="big">Connection error</span>' + esc(e?.message || e) + '</div>';
+      }
+    }
+
+    // ===== discovery =======================================================
+    async function reloadAll() {
+      if (!robot) return;
+      const content = document.getElementById('content');
+      content.innerHTML = '<div class="empty">Discovering components…</div>';
+      for (const k of Object.keys(INSTANCES)) delete INSTANCES[k];
+
+      let names = [];
+      try { names = await robot.resourceNames(); }
+      catch (e) {
+        content.innerHTML = '<div class="empty"><span class="big">resourceNames() failed</span>' + esc(e?.message || e) + '</div>';
+        return;
+      }
+      const generics = names.filter(r => r.subtype === 'generic');
+      const scenes = names.filter(r => r.subtype === 'world_state_store');
+
+      // Probe each generic component. A non-workcell generic errors on
+      // get_schema → skipped (duck-typed discovery).
+      for (const rn of generics) {
+        const client = new (VIAM.GenericComponentClient || VIAM.GenericClient)(robot, rn.name);
+        let schemaResp;
+        try { schemaResp = await client.doCommand(toStruct({ get_schema: true })); }
+        catch (e) { continue; }
+        const schema = schemaResp && schemaResp.schema;
+        if (!Array.isArray(schema) || schema.length === 0) continue;
+
+        let model = rn.name, attrs = {}, visuals = [];
+        try { const st = await client.doCommand(toStruct({ get_status: true })); if (st && st.model) model = st.model; }
+        catch (e) { /* model label optional */ }
+        try { attrs = await client.doCommand(toStruct({ get_attributes: true })) || {}; }
+        catch (e) { /* render with defaults */ }
+        try { const v = await client.doCommand(toStruct({ get_visuals: true })); visuals = (v && v.visuals) || []; }
+        catch (e) { /* preview optional */ }
+
+        INSTANCES[rn.name] = { name: rn.name, model, schema, attrs, visuals, client, kind: 'component' };
+      }
+      for (const rn of scenes) {
+        let client = null;
+        try { client = new VIAM.WorldStateStoreClient(robot, rn.name); } catch (e) { /* skip */ }
+        if (client) INSTANCES[rn.name] = { name: rn.name, model: 'workcell-scene', kind: 'scene', client };
+      }
+
+      await renderAll();
+    }
+
+    // ===== rendering =======================================================
+    async function renderAll() {
+      await threeReady;
+      const content = document.getElementById('content');
+      const summary = document.getElementById('summary');
+      const comps = Object.values(INSTANCES).filter(i => i.kind === 'component');
+      const scenes = Object.values(INSTANCES).filter(i => i.kind === 'scene');
+
+      if (!comps.length && !scenes.length) {
+        summary.innerHTML = '';
+        content.innerHTML = '<div class="empty"><span class="big">No workcell components found</span>' +
+          'This machine has no <code>viam:workcell-components</code> models configured.</div>';
+        return;
+      }
+
+      const byModel = {};
+      for (const c of comps) (byModel[c.model] = byModel[c.model] || []).push(c);
+      const modelCount = Object.keys(byModel).length;
+      summary.innerHTML =
+        '<span class="tag">' + comps.length + ' COMPONENT' + (comps.length === 1 ? '' : 'S') + '</span>' +
+        '<span>across ' + modelCount + ' model' + (modelCount === 1 ? '' : 's') +
+        (scenes.length ? ' · ' + scenes.length + ' scene service' + (scenes.length === 1 ? '' : 's') : '') +
+        ' · edits apply live, watch the machine 3D tab</span>';
+
+      content.innerHTML = '';
+      let idx = 0;
+      for (const model of Object.keys(byModel).sort()) {
+        content.appendChild(groupHeader(shortModel(model), byModel[model].length));
+        for (const inst of byModel[model].sort((a, b) => a.name.localeCompare(b.name))) {
+          mountCard(inst, null, idx++);
+        }
+      }
+      if (scenes.length) {
+        content.appendChild(groupHeader('scene services', scenes.length));
+        for (const s of scenes) mountSceneCard(s, idx++);
+      }
+    }
+
+    function groupHeader(label, n) {
+      const el = document.createElement('div');
+      el.className = 'grouphdr';
+      el.innerHTML = '<h2>' + esc(label) + '</h2><span class="count">×' + n + '</span><span class="rule"></span>';
+      return el;
+    }
+
+    // mountCard builds (or rebuilds) a component card, wires it, sets up 3D.
+    function mountCard(inst, oldEl, idx) {
+      if (inst.preview && inst.preview.controls) {
+        inst.preview.controls.dispose();
+        inst.preview = null;
+      }
+      const el = document.createElement('section');
+      el.className = 'module';
+      if (idx != null) el.style.animationDelay = Math.min(idx, 12) * 45 + 'ms';
+      else el.style.animation = 'none';   // rebuild (apply/reset/cancel): no re-entrance
+      el.dataset.instance = inst.name;
+      el.innerHTML = cardInner(inst);
+      if (oldEl) oldEl.replaceWith(el); else document.getElementById('content').appendChild(el);
+      inst.el = el;
+      inst.dirty = false;
+      wireCard(inst, el);
+      if (THREE) setupPreview(inst, el.querySelector('.viewport__canvas'));
+      return el;
+    }
+
+    function cardInner(inst) {
+      let groups = '', lastGroup = null, open = false;
+      for (const e of inst.schema) {
+        const g = e.group || '';
+        if (g !== lastGroup) {
+          if (open) groups += '</div></div>';
+          groups += '<div class="fset"><div class="fset__lbl">' + esc(g || 'Attributes') + '</div><div class="grid">';
+          open = true; lastGroup = g;
+        }
+        groups += wrapField(e, fieldHTML(e, inst.attrs ? inst.attrs[e.key] : undefined));
+      }
+      if (open) groups += '</div></div>';
+
+      const pose = inst.attrs && inst.attrs.pose;
+      const poseStr = pose
+        ? '<b>POSE</b> &nbsp;x ' + fmt(pose.x) + ' &nbsp;y ' + fmt(pose.y) + ' &nbsp;z ' + fmt(pose.z) + ' &nbsp;·&nbsp; from frame block'
+        : '';
+      const previewBody = THREE
+        ? '<canvas class="viewport__canvas"></canvas>' +
+          '<div class="viewport__bl"></div><div class="viewport__br"></div>' +
+          '<div class="viewport__hint">drag to orbit · scroll to zoom</div>'
+        : '<div class="viewport__none">3D preview unavailable</div>';
+
+      return (
+        '<div class="module__bar">' +
+          '<span class="module__idx">' + esc(inst.name.slice(0, 2).toUpperCase()) + '</span>' +
+          '<span class="module__name">' + esc(inst.name) + '</span>' +
+          '<span class="module__model">' + esc(inst.model) + '</span>' +
+          '<span class="module__bar-spacer"></span>' +
+          '<span class="chip chip--dirty">Modified</span>' +
+        '</div>' +
+        '<div class="module__body">' +
+          '<form class="module__form" autocomplete="off">' + groups + '</form>' +
+          '<div class="viewport">' +
+            '<div class="viewport__head"><span class="dot"></span><span>Preview</span>' +
+              '<span class="sp"></span><button type="button" class="btn btn--sm btn--ghost" data-act="recenter">Recenter</button></div>' +
+            '<div class="viewport__stage">' + previewBody + '</div>' +
+          '</div>' +
+        '</div>' +
+        '<div class="module__foot">' +
+          '<span class="module__pose">' + poseStr + '</span>' +
+          '<span class="foot-spacer"></span>' +
+          '<span class="status" data-role="status"></span>' +
+          '<button type="button" class="btn btn--ghost" data-act="cancel" disabled>Cancel</button>' +
+          '<button type="button" class="btn btn--ghost" data-act="reset" disabled>Reset</button>' +
+          '<button type="button" class="btn btn--primary" data-act="apply" disabled>Apply</button>' +
+        '</div>'
+      );
+    }
+
+    function mountSceneCard(inst, idx) {
+      const el = document.createElement('section');
+      el.className = 'module';
+      el.style.animationDelay = Math.min(idx, 12) * 45 + 'ms';
+      el.dataset.instance = inst.name;
+      el.innerHTML =
+        '<div class="module__bar">' +
+          '<span class="module__idx">WS</span>' +
+          '<span class="module__name">' + esc(inst.name) + '</span>' +
+          '<span class="module__model">rdk:service:world_state_store</span>' +
+        '</div>' +
+        '<div class="module__foot">' +
+          '<span class="module__pose">republishes every component\'s visuals to the 3D scene</span>' +
+          '<span class="foot-spacer"></span>' +
+          '<span class="status" data-role="status"></span>' +
+          '<button type="button" class="btn btn--primary" data-act="refresh-scene">Refresh scene</button>' +
+        '</div>';
+      document.getElementById('content').appendChild(el);
+      inst.el = el;
+      el.querySelector('[data-act=refresh-scene]').addEventListener('click', () => refreshScene(inst));
+    }
+
+    // ----- field rendering -------------------------------------------------
+    // wrapField tags a conditional field (schema entry with a `when` block)
+    // so applyConditions can dim it + explain why when its dependency isn't
+    // satisfied. The empty .field__cond span is filled in live.
+    function wrapField(e, html) {
+      if (!e.when || !e.when.key) return html;
+      const dw = " data-when='" + esc(JSON.stringify(e.when)) + "'";
+      html = html.replace('<div class="field', '<div' + dw + ' class="field');
+      const i = html.lastIndexOf('</div>');
+      if (i >= 0) html = html.slice(0, i) + '<span class="field__cond"></span>' + html.slice(i);
+      return html;
+    }
+
+    // applyConditions evaluates every conditional field against the live
+    // value of its controlling input and dims the ones whose `when` is unmet.
+    function applyConditions(formEl, schema) {
+      formEl.querySelectorAll('.field[data-when]').forEach(field => {
+        let when;
+        try { when = JSON.parse(field.getAttribute('data-when')); } catch (e) { return; }
+        const ctrl = formEl.querySelector('[data-key="' + cssEsc(when.key) + '"]');
+        if (!ctrl) return;
+        const val = ctrl.type === 'checkbox' ? ctrl.checked : ctrl.value;
+        let active = true;
+        if (when.equals !== undefined) active = String(val) === String(when.equals);
+        else if (when.not_equals !== undefined) active = String(val) !== String(when.not_equals);
+        field.classList.toggle('field--off', !active);
+        const note = field.querySelector('.field__cond');
+        if (note) {
+          const ce = (schema || []).find(s => s.key === when.key);
+          const lbl = ce ? (ce.label || ce.key) : when.key;
+          note.textContent = active ? '' :
+            'Not used while ' + lbl + ' is "' + (val === '' ? '(none)' : val) + '"';
+        }
+      });
+    }
+
+    function fieldHTML(e, value) {
+      const label = esc(e.label || e.key);
+      const help = e.help ? '<span class="help">' + esc(e.help) + '</span>' : '';
+      const dk = 'data-key="' + esc(e.key) + '" data-type="' + esc(e.type) + '"';
+
+      if (e.type === 'bool') {
+        return '<div class="field">' +
+          '<label class="boolbox"><span class="field__lbl">' + label + '</span>' +
+          '<span class="tgl"><input type="checkbox" ' + dk + (value ? ' checked' : '') + '>' +
+          '<span class="tgl__track"></span></span></label>' + help + '</div>';
+      }
+      if (e.type === 'color') {
+        return '<div class="field"><label>' + label + '</label>' +
+          '<input type="color" class="swatch" ' + dk + ' value="' + rgbToHex(value) + '">' + help + '</div>';
+      }
+      if (e.type === 'enum') {
+        return '<div class="field"><label>' + label + '</label>' +
+          '<div class="sel"><select ' + dk + '>' + optionsHTML(e.values, value) + '</select></div>' + help + '</div>';
+      }
+      if (e.type === 'enum_list') {
+        const arr = Array.isArray(value) ? value : [];
+        let rows = '';
+        for (const v of arr) rows += enumListRow(e.values, v);
+        return '<div class="field field--wide"><label>' + label + '</label>' +
+          '<div class="enumlist" ' + dk + ' data-values=\'' + esc(JSON.stringify(e.values || [])) + '\'>' + rows + '</div>' +
+          '<button type="button" class="btn btn--sm btn--ghost enumlist__add" data-act="enum-add">+ Add</button>' +
+          help + '</div>';
+      }
+      if (e.type === 'vec3') {
+        const v = value || {};
+        return '<div class="field field--wide"><label>' + label + (e.unit ? ' · ' + esc(e.unit) : '') + '</label>' +
+          '<div class="vec3" ' + dk + '>' +
+          axisInput('x', v.x) + axisInput('y', v.y) + axisInput('z', v.z) +
+          '</div>' + help + '</div>';
+      }
+      if (e.type === 'number') {
+        const a = [];
+        if (e.min !== undefined) a.push('min="' + e.min + '"');
+        if (e.max !== undefined) a.push('max="' + e.max + '"');
+        if (e.step !== undefined) a.push('step="' + e.step + '"');
+        const unit = e.unit ? '<span class="num__unit">' + esc(e.unit) + '</span>' : '';
+        return '<div class="field"><label>' + label + '</label>' +
+          '<div class="num"><input type="number" ' + dk + ' ' + a.join(' ') +
+          ' value="' + (value != null ? numAttr(value) : '') + '">' + unit + '</div>' + help + '</div>';
+      }
+      return '<div class="field"><label>' + label + '</label>' +
+        '<input type="text" class="inp" ' + dk + ' value="' + esc(value != null ? String(value) : '') + '">' + help + '</div>';
+    }
+    function axisInput(axis, val) {
+      return '<label><span class="ax">' + axis + '</span>' +
+        '<input type="number" step="any" data-axis="' + axis + '" ' +
+        'value="' + (val != null ? numAttr(val) : '') + '"></label>';
+    }
+    function enumListRow(values, selected) {
+      return '<div class="enumlist__row"><div class="sel"><select>' + optionsHTML(values, selected) +
+        '</select></div><button type="button" class="x" data-act="enum-del">✕</button></div>';
+    }
+    function optionsHTML(values, selected) {
+      let o = '';
+      for (const v of (values || [])) {
+        const lbl = v === '' ? '(none)' : v;
+        o += '<option value="' + esc(v) + '"' + (v === selected ? ' selected' : '') + '>' + esc(lbl) + '</option>';
+      }
+      return o;
+    }
+
+    // ----- card wiring -----------------------------------------------------
+    function wireCard(inst, el) {
+      const form = el.querySelector('.module__form');
+      form.addEventListener('submit', e => e.preventDefault());  // Enter must not reload
+      const onEdit = () => { markDirty(inst); applyConditions(form, inst.schema); };
+      form.addEventListener('input', onEdit);
+      form.addEventListener('change', onEdit);
+      el.querySelector('[data-act=apply]').addEventListener('click', () => applyInstance(inst));
+      el.querySelector('[data-act=reset]').addEventListener('click', () => resetInstance(inst));
+      el.querySelector('[data-act=cancel]').addEventListener('click', () => cancelInstance(inst));
+      const recenter = el.querySelector('[data-act=recenter]');
+      if (recenter) recenter.addEventListener('click', () => { if (inst.preview) { frameCamera(inst.preview); renderPreview(inst); } });
+      // enum-list add/remove via delegation
+      form.querySelectorAll('.enumlist').forEach(list => {
+        const wrap = list.parentElement;
+        wrap.querySelector('[data-act=enum-add]').addEventListener('click', () => {
+          let values = [];
+          try { values = JSON.parse(list.getAttribute('data-values')); } catch (e) { /* */ }
+          const tmp = document.createElement('div');
+          tmp.innerHTML = enumListRow(values, values[0]);
+          list.appendChild(tmp.firstChild);
+          markDirty(inst);
+        });
+        list.addEventListener('click', ev => {
+          const x = ev.target.closest('[data-act=enum-del]');
+          if (x) { x.closest('.enumlist__row').remove(); markDirty(inst); }
+        });
+      });
+      applyConditions(form, inst.schema);   // set initial dim state
+    }
+
+    function markDirty(inst) {
+      if (!inst.el) return;
+      inst.dirty = true;
+      inst.el.classList.add('is-dirty');
+      setButtons(inst, true);
+      setStatus(inst, '', '');
+    }
+    function setButtons(inst, enabled) {
+      ['apply', 'reset', 'cancel'].forEach(a => {
+        const b = inst.el.querySelector('[data-act=' + a + ']');
+        if (b) b.disabled = !enabled;
+      });
+    }
+    function setStatus(inst, kind, text) {
+      const s = inst.el && inst.el.querySelector('[data-role=status]');
+      if (s) { s.className = 'status ' + kind; s.textContent = text; }
+    }
+
+    // ----- apply / reset / cancel -----------------------------------------
+    async function applyInstance(inst) {
+      const payload = {};
+      for (const e of inst.schema) {
+        const v = readField(inst.el, e);
+        if (v !== undefined) payload[e.key] = v;
+      }
+      setButtons(inst, false);
+      setStatus(inst, 'work', '◇ Applying…');
+      try {
+        const resp = await inst.client.doCommand(toStruct({ set_attributes: payload }));
+        if (resp && typeof resp === 'object') inst.attrs = resp;
+        // Re-pull visuals so the 3D preview reflects the applied change.
+        try {
+          const v = await inst.client.doCommand(toStruct({ get_visuals: true }));
+          inst.visuals = (v && v.visuals) || inst.visuals;
+        } catch (e) { /* keep old preview */ }
+        const fresh = mountCard(inst, inst.el, null);
+        setStatus(inst, 'ok', '✓ Applied');
+      } catch (e) {
+        setButtons(inst, true);
+        setStatus(inst, 'bad', '✗ ' + (e?.message || e));
+      }
+    }
+    async function resetInstance(inst) {
+      // Revert the form to the last-known attributes (no network).
+      mountCard(inst, inst.el, null);
+      setStatus(inst, '', 'Reset to last-applied values');
+    }
+    async function cancelInstance(inst) {
+      // Discard edits AND re-pull the machine's current state.
+      setButtons(inst, false);
+      setStatus(inst, 'work', '◇ Reloading…');
+      try {
+        const attrs = await inst.client.doCommand(toStruct({ get_attributes: true }));
+        if (attrs && typeof attrs === 'object') inst.attrs = attrs;
+      } catch (e) { /* fall back to cached */ }
+      mountCard(inst, inst.el, null);
+      setStatus(inst, '', 'Reloaded from machine');
+    }
+    async function refreshScene(inst) {
+      setStatus(inst, 'work', '◇ Refreshing…');
+      try {
+        await inst.client.doCommand(toStruct({ refresh: true }));
+        setStatus(inst, 'ok', '✓ Scene republished');
+      } catch (e) {
+        setStatus(inst, 'bad', '✗ ' + (e?.message || e));
+      }
+    }
+
+    // readField pulls one schema entry's value out of the card.
+    function readField(el, e) {
+      if (e.type === 'enum_list') {
+        const list = el.querySelector('.enumlist[data-key="' + cssEsc(e.key) + '"]');
+        if (!list) return undefined;
+        return Array.from(list.querySelectorAll('select')).map(s => s.value);
+      }
+      if (e.type === 'vec3') {
+        const wrap = el.querySelector('.vec3[data-key="' + cssEsc(e.key) + '"]');
+        if (!wrap) return undefined;
+        const out = {};
+        for (const ax of ['x', 'y', 'z']) {
+          const inp = wrap.querySelector('input[data-axis="' + ax + '"]');
+          out[ax] = inp && inp.value !== '' ? parseFloat(inp.value) : 0;
+        }
+        return out;
+      }
+      const node = el.querySelector('[data-key="' + cssEsc(e.key) + '"]');
+      if (!node) return undefined;
+      if (e.type === 'bool') return node.checked;
+      if (e.type === 'color') {
+        const rgb = hexToRgb(node.value);
+        const prev = INSTANCES[el.dataset.instance].attrs;
+        const op = prev && prev[e.key] && prev[e.key].opacity;
+        if (op) rgb.opacity = op;
+        return rgb;
+      }
+      if (e.type === 'number') return node.value === '' ? undefined : parseFloat(node.value);
+      return node.value;
+    }
+
+    // ===== 3D preview ======================================================
+    // One shared WebGL renderer; each card has its own scene + camera and a
+    // 2D canvas the rendered frame is blitted onto. This scales to any number
+    // of cards without exhausting WebGL contexts.
+    const PV_W = 320, PV_H = 232, PV_DPR = Math.min(window.devicePixelRatio || 1, 2);
+    let sharedRenderer = null;
+    function getRenderer() {
+      if (!sharedRenderer) {
+        // preserveDrawingBuffer: the rendered frame is blitted onto each
+        // card's 2D canvas via drawImage — without it the buffer may be
+        // cleared before the copy and frames come back blank.
+        sharedRenderer = new THREE.WebGLRenderer({
+          antialias: true, alpha: true, preserveDrawingBuffer: true,
+        });
+        sharedRenderer.setPixelRatio(PV_DPR);
+        sharedRenderer.setSize(PV_W, PV_H, false);
+      }
+      return sharedRenderer;
+    }
+
+    // OV (orientation vector, degrees) + theta → quaternion.
+    function applyOV(quat, p) {
+      let ox = p.o_x || 0, oy = p.o_y || 0, oz = p.o_z || 0;
+      const mag = Math.hypot(ox, oy, oz);
+      if (mag < 1e-9) { ox = 0; oy = 0; oz = 1; } else { ox /= mag; oy /= mag; oz /= mag; }
+      const ov = new THREE.Vector3(ox, oy, oz);
+      const qAlign = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), ov);
+      const qTheta = new THREE.Quaternion().setFromAxisAngle(ov, (p.theta || 0) * Math.PI / 180);
+      quat.copy(qTheta).multiply(qAlign);
+    }
+    function matFor(v) {
+      const c = v.color || {};
+      const op = (c.opacity != null && c.opacity > 0 && c.opacity <= 1) ? c.opacity : 1;
+      // The wire RGB is sRGB-encoded (authored for the Viam viewer). Tell
+      // Three it's sRGB via setRGB's colorSpace arg, else the linear→sRGB
+      // output pass washes every colour out to a pastel.
+      const col = new THREE.Color().setRGB(
+        Math.max(c.r || 0, 0) / 255,
+        Math.max(c.g || 0, 0) / 255,
+        Math.max(c.b || 0, 0) / 255,
+        THREE.SRGBColorSpace,
+      );
+      return new THREE.MeshStandardMaterial({
+        color: col,
+        roughness: 0.58, metalness: 0.22,
+        transparent: op < 1, opacity: op,
+      });
+    }
+    function meshFromVisual(v) {
+      const p = v.pose || {};
+      const mat = matFor(v);
+      let obj;
+      if (v.type === 'box') {
+        const d = v.dims_mm || {};
+        obj = new THREE.Mesh(new THREE.BoxGeometry(
+          Math.max(d.x || 1, .1), Math.max(d.y || 1, .1), Math.max(d.z || 1, .1)), mat);
+      } else if (v.type === 'sphere') {
+        obj = new THREE.Mesh(new THREE.SphereGeometry(Math.max(v.radius_mm || 4, .1), 28, 18), mat);
+      } else if (v.type === 'capsule') {
+        const r = Math.max(v.radius_mm || 3, .1);
+        const g = new THREE.CapsuleGeometry(r, Math.max((v.length_mm || 10) - 2 * r, .1), 6, 18);
+        g.rotateX(Math.PI / 2);          // Three capsule axis Y → Viam axis Z
+        obj = new THREE.Mesh(g, mat);
+      } else if (v.type === 'arrow') {
+        const len = Math.max(v.length_mm || 40, 1), r = Math.max(v.radius_mm || 4, .5);
+        const tip = Math.min(len * 0.34, r * 4.5), shaft = Math.max(len - tip, .1);
+        obj = new THREE.Group();
+        const sg = new THREE.CylinderGeometry(r, r, shaft, 16); sg.rotateX(Math.PI / 2);
+        const sm = new THREE.Mesh(sg, mat); sm.position.z = -len / 2 + shaft / 2;
+        const cg = new THREE.ConeGeometry(r * 2.1, tip, 18); cg.rotateX(Math.PI / 2);
+        const cm = new THREE.Mesh(cg, mat); cm.position.z = len / 2 - tip / 2;
+        obj.add(sm, cm);
+      } else {
+        return null;
+      }
+      obj.position.set(p.x || 0, p.y || 0, p.z || 0);
+      applyOV(obj.quaternion, p);
+      return obj;
+    }
+
+    function setupPreview(inst, canvas) {
+      if (!canvas) return;
+      const scene = new THREE.Scene();
+      // Lit for a light viewport: bright sky, soft (not black) ground bounce.
+      const hemi = new THREE.HemisphereLight(0xffffff, 0xc6ccd4, 1.5);
+      scene.add(hemi);
+      const key = new THREE.DirectionalLight(0xffffff, 1.85);
+      key.position.set(0.7, -1.0, 1.3);
+      scene.add(key);
+      const rim = new THREE.DirectionalLight(0x88c4d0, 0.35);
+      rim.position.set(-1, 0.6, 0.4);
+      scene.add(rim);
+
+      const root = new THREE.Group();
+      scene.add(root);
+      let any = false;
+      for (const v of (inst.visuals || [])) {
+        if (!v || v.type === 'frame') continue;
+        const m = meshFromVisual(v);
+        if (m) { root.add(m); any = true; }
+      }
+      // Center the component at the origin so the camera framing is stable.
+      const bbox = new THREE.Box3().setFromObject(root);
+      let radius = 200;
+      if (any && bbox.isEmpty() === false) {
+        const center = bbox.getCenter(new THREE.Vector3());
+        const size = bbox.getSize(new THREE.Vector3());
+        root.position.sub(center);
+        radius = Math.max(size.x, size.y, size.z, 1) / 2;
+      }
+
+      const camera = new THREE.PerspectiveCamera(40, PV_W / PV_H, 1, 5e5);
+      camera.up.set(0, 0, 1);
+      const controls = new OrbitControls(camera, canvas);
+      controls.enableDamping = false;
+      controls.enablePan = false;
+      controls.rotateSpeed = 0.85;
+      controls.minDistance = radius * 1.3;
+      controls.maxDistance = radius * 9;
+      controls.addEventListener('change', () => renderPreview(inst));
+
+      inst.preview = { scene, camera, controls, canvas, radius };
+      frameCamera(inst.preview);
+      renderPreview(inst);
+    }
+    function frameCamera(pv) {
+      const d = pv.radius * 3.0;
+      pv.camera.position.set(d * 0.62, -d * 0.78, d * 0.56);
+      pv.controls.target.set(0, 0, 0);
+      pv.camera.near = Math.max(pv.radius / 60, 0.5);
+      pv.camera.far = d * 14;
+      pv.camera.updateProjectionMatrix();
+      pv.controls.update();
+    }
+    function renderPreview(inst) {
+      const pv = inst.preview;
+      if (!pv || !THREE) return;
+      // Size the drawing buffer to the canvas's actual display size so the
+      // 3D image is never stretched, whatever the card's height works out to.
+      const cw = Math.max(pv.canvas.clientWidth || PV_W, 1);
+      const ch = Math.max(pv.canvas.clientHeight || PV_H, 1);
+      if (pv.canvas.width !== Math.round(cw * PV_DPR) || pv.canvas.height !== Math.round(ch * PV_DPR)) {
+        pv.canvas.width = Math.round(cw * PV_DPR);
+        pv.canvas.height = Math.round(ch * PV_DPR);
+      }
+      if (Math.abs(pv.camera.aspect - cw / ch) > 1e-4) {
+        pv.camera.aspect = cw / ch;
+        pv.camera.updateProjectionMatrix();
+      }
+      const r = getRenderer();
+      r.setSize(cw, ch, false);
+      r.render(pv.scene, pv.camera);
+      const ctx = pv.canvas.getContext('2d');
+      ctx.clearRect(0, 0, pv.canvas.width, pv.canvas.height);
+      ctx.drawImage(r.domElement, 0, 0, pv.canvas.width, pv.canvas.height);
+    }
+
+    // ===== helpers =========================================================
+    function esc(s) {
+      return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+    function cssEsc(s) { return String(s).replace(/["\\]/g, '\\$&'); }
+    function shortModel(m) { const p = String(m).split(':'); return p.length === 3 ? p[2] : m; }
+    function fmt(n) { return (typeof n === 'number') ? (Math.round(n * 10) / 10) : n; }
+    function numAttr(n) { return Number.isInteger(n) ? String(n) : String(Math.round(n * 1e6) / 1e6); }
+    function rgbToHex(c) {
+      if (!c || typeof c !== 'object') return '#8a8a8a';
+      const h = n => Math.max(0, Math.min(255, Math.round(n || 0))).toString(16).padStart(2, '0');
+      return '#' + h(c.r) + h(c.g) + h(c.b);
+    }
+    function hexToRgb(hex) {
+      const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex || '');
+      return m ? { r: parseInt(m[1], 16), g: parseInt(m[2], 16), b: parseInt(m[3], 16) }
+               : { r: 138, g: 138, b: 138 };
+    }
+
+    document.getElementById('reloadBtn').addEventListener('click', () => reloadAll());
+    document.getElementById('reconnectBtn').addEventListener('click', () => connect());
+    connect();
+  </script>
+</body>
+</html>

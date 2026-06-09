@@ -3,7 +3,7 @@
   "module_id": "viam:workcell-components",
   "visibility": "public",
   "url": "https://github.com/viam-labs/workcell-components",
-  "description": "Generic components for palletizing/picking workcells: a pallet component (pose + dimensions + geometry), a pick-station component (inbound box presentation surface), and a workcell-scene WSS service that publishes them as visuals to the 3D viewer.",
+  "description": "Generic components for palletizing/picking workcells: pallet, pick-station, safety hardware (fence, light curtain, e-stop, stack-light), decoration (tote-stack, robot-pedestal, hmi-cabinet, floor-decal, workcell-bounds), and a workcell-scene WSS service that publishes all of them to the 3D viewer.",
   "models": [
     {
       "api": "rdk:component:generic",
@@ -16,6 +16,49 @@
     {
       "api": "rdk:service:world_state_store",
       "model": "viam:workcell-components:workcell-scene"
+    },
+    {
+      "api": "rdk:component:generic",
+      "model": "viam:workcell-components:safety-fence"
+    },
+    {
+      "api": "rdk:component:generic",
+      "model": "viam:workcell-components:light-curtain"
+    },
+    {
+      "api": "rdk:component:generic",
+      "model": "viam:workcell-components:e-stop"
+    },
+    {
+      "api": "rdk:component:generic",
+      "model": "viam:workcell-components:stack-light"
+    },
+    {
+      "api": "rdk:component:generic",
+      "model": "viam:workcell-components:tote-stack"
+    },
+    {
+      "api": "rdk:component:generic",
+      "model": "viam:workcell-components:robot-pedestal"
+    },
+    {
+      "api": "rdk:component:generic",
+      "model": "viam:workcell-components:hmi-cabinet"
+    },
+    {
+      "api": "rdk:component:generic",
+      "model": "viam:workcell-components:floor-decal"
+    },
+    {
+      "api": "rdk:component:generic",
+      "model": "viam:workcell-components:workcell-bounds"
+    }
+  ],
+  "applications": [
+    {
+      "name": "workcell-tuner",
+      "type": "single_machine",
+      "entrypoint": "apps/workcell/index.html"
     }
   ],
   "markdown_link": "README.md",

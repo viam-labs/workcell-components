@@ -106,6 +106,13 @@ type PickStationConfig struct {
 	// Defaults to {0, 1, 0} (boxes flow in world +Y) when unset.
 	ConveyorDirection *Vec3D `json:"conveyor_direction,omitempty"`
 
+	// RollerSpinPeriodS controls roller animation. When > 0, rollers
+	// spin around their long axis with this period (seconds per
+	// revolution). 0 / unset = static. Visual only; no motion-plan
+	// or palletizer effect. Useful for visual feedback that the
+	// conveyor is "live."
+	RollerSpinPeriodS float64 `json:"roller_spin_period_s,omitempty"`
+
 	Label string `json:"label,omitempty"`
 
 	// VisualOptions — see pallet.VisualOptions for semantics. No
@@ -312,6 +319,35 @@ func (p *pickStation) DoCommand(_ context.Context, cmd map[string]interface{}) (
 	if _, ok := cmd["get_attributes"]; ok {
 		return p.attributesMap(), nil
 	}
+	if _, ok := cmd["get_schema"]; ok {
+		return schemaToResponse(pickStationSchema())
+	}
+	if _, ok := cmd["get_visuals"]; ok {
+		// p.pose is the bottom-left-top corner. Visuals want the
+		// centroid pose; compose the inverse offset.
+		centerOffset := spatialmath.NewPoseFromPoint(
+			r3.Vector{X: p.width / 2, Y: p.length / 2, Z: -p.thickness / 2},
+		)
+		centerPose := spatialmath.Compose(p.pose, centerOffset)
+		conv := p.effectiveConveyorDirection()
+		entries := pickStationVisuals(
+			p.name.Name,
+			centerPose,
+			p.width, p.length, p.thickness,
+			p.color,
+			p.cfg.VisualOptions,
+			p.cfg.LowestPointHeightMM,
+			conv,
+			p.cfg.BoxOriginOffsetMM,
+			p.cfg.BoxThetaDeg,
+			p.cfg.RollerSpinPeriodS,
+		)
+		out, err := visualsToMaps(entries)
+		if err != nil {
+			return nil, fmt.Errorf("get_visuals: %w", err)
+		}
+		return map[string]interface{}{"visuals": out}, nil
+	}
 	if _, ok := cmd["get_conveyor_direction"]; ok {
 		v := p.effectiveConveyorDirection()
 		return map[string]interface{}{"x": v.X, "y": v.Y, "z": v.Z}, nil
@@ -466,6 +502,9 @@ func (p *pickStation) setAttributes(v interface{}) (map[string]interface{}, erro
 			Z: asFloat(v2["z"]),
 		}
 	}
+	if _, ok := m["roller_spin_period_s"]; ok {
+		p.cfg.RollerSpinPeriodS = asFloat(m["roller_spin_period_s"])
+	}
 	applyVisualOptions(&p.cfg.VisualOptions, m)
 	p.logger.Infow("pick-station attributes updated via DoCommand")
 	return p.attributesMap(), nil
@@ -499,6 +538,7 @@ func (p *pickStation) attributesMap() map[string]interface{} {
 		"box_theta_deg":          p.cfg.BoxThetaDeg,
 		"pick_home_z_offset_mm":  p.cfg.PickHomeZOffsetMM,
 		"conveyor_direction":     map[string]interface{}{"x": conv.X, "y": conv.Y, "z": conv.Z},
+		"roller_spin_period_s":   p.cfg.RollerSpinPeriodS,
 		"pose":                   poseToWorldMap(p.pose),
 		"pickup_pose":            poseToWorldMap(p.pickupPose()),
 		"summary":                p.summaryString(),
@@ -623,6 +663,32 @@ func boxHeightArg(cmd map[string]interface{}, verbValue interface{}) float64 {
 		}
 	}
 	return asFloat(cmd["box_height_mm"])
+}
+
+// pickStationSchema returns the webapp-edit schema for the pick-station.
+// Geometry knobs scale the conveyor footprint + collision box; the
+// behavior block carries grasp + conveyor-direction tuning the
+// palletizer reads through DoCommand.
+func pickStationSchema() []schemaEntry {
+	return []schemaEntry{
+		numEntry("width_mm", "Width", schemaGroupGeometry, "mm", 50, 3000, 1),
+		numEntry("length_mm", "Length", schemaGroupGeometry, "mm", 50, 3000, 1),
+		numEntry("thickness_mm", "Thickness", schemaGroupGeometry, "mm", 5, 300, 1),
+		numEntry("lowest_point_height_mm", "Floor clearance", schemaGroupGeometry, "mm", 0, 3000, 1),
+
+		vec3Entry("box_origin_offset_mm", "Box origin offset (station-local)", schemaGroupBehavior, "mm"),
+		numEntry("box_theta_deg", "Box yaw", schemaGroupBehavior, "deg", -180, 180, 1),
+		numEntry("pick_home_z_offset_mm", "Pick home Z offset", schemaGroupBehavior, "mm", 0, 500, 1),
+		vec3Entry("conveyor_direction", "Conveyor flow direction (unit vec)", schemaGroupBehavior, ""),
+
+		numEntry("roller_spin_period_s", "Roller spin period (0 = static)",
+			schemaGroupBehavior, "s", 0, 30, 0.1),
+
+		colorEntry("color", "Deck color", schemaGroupVisual),
+		boolEntry("visible", "Visible", schemaGroupVisual),
+		showAxesEntry(),
+		numEntry("opacity", "Opacity multiplier", schemaGroupVisual, "", 0, 1, 0.05),
+	}
 }
 
 // decomposeRPYDeg returns roll/pitch/yaw (degrees) from any
