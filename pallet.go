@@ -20,6 +20,12 @@ import (
 // reconfigure (consumers like pack-sequencer fetch on-demand and pick
 // up the new values).
 //
+// Frame origin: the bounding-box CENTROID (Viam convention — dragging
+// the frame in the 3D viewer drags the visible box's center). To rest
+// the pallet on the floor, set frame.translation.z = thickness_mm / 2
+// (~76 mm for the GMA default). Rotations in frame.orientation rotate
+// around this centroid.
+//
 // The pallet's pose still comes from the standard `frame:` block on
 // the resource config — drag-and-save in the 3D viewer works as
 // before. When a `frame.geometry` is present, its dimensions override

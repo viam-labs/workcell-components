@@ -28,6 +28,12 @@ type Vec3D = wcsh.Vec3D
 // be updated live through DoCommand so consumers (the palletizer)
 // pick up the new values without needing a reconfigure.
 //
+// Frame origin: the bounding-box CENTROID (Viam convention). Internally
+// the pick-station composes a corner offset so pack-order math reads
+// from the bottom-left-top corner outward; `get_visual_pose` returns
+// the centroid for the scene service. To match a real conveyor surface
+// height, set frame.translation.z = lowest_point_height_mm + thickness_mm/2.
+//
 // Pose still lives on the standard `frame:` block — drag-and-save in
 // the 3D viewer works as before. Conveyor tilt — pitch incline
 // (around the short axis) and roll incline (around the long axis) —

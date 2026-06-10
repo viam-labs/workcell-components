@@ -21,6 +21,10 @@ import (
 // Pose comes from the standard `frame:` block so operators drag-place
 // in the 3D viewer. The panel's local +X is the length direction
 // (along the fence run); +Z is up.
+//
+// Frame origin: centerline of the panel BASE on the floor. Set
+// frame.translation.z = 0 to plant the fence on the floor; the panel
+// extends upward by height_mm.
 var SafetyFenceModel = resource.NewModel("viam", "workcell-components", "safety-fence")
 
 const (

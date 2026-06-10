@@ -7,51 +7,63 @@
   "models": [
     {
       "api": "rdk:component:generic",
-      "model": "viam:workcell-components:pallet"
+      "model": "viam:workcell-components:pallet",
+      "description": "Pallet (slatted GMA or plastic). Frame origin = bounding-box centroid; set frame.translation.z = thickness_mm/2 (~76 mm default) to rest on floor."
     },
     {
       "api": "rdk:component:generic",
-      "model": "viam:workcell-components:pick-station"
+      "model": "viam:workcell-components:pick-station",
+      "description": "Inbound conveyor / pick fixture (rollers, rails, legs, direction arrow). Frame origin = bounding-box centroid; set frame.translation.z = lowest_point_height_mm + thickness_mm/2 to match a real conveyor height."
     },
     {
       "api": "rdk:service:world_state_store",
-      "model": "viam:workcell-components:workcell-scene"
+      "model": "viam:workcell-components:workcell-scene",
+      "description": "World-state-store service that polls every configured workcell component's get_visuals and publishes them to the 3D viewer. No frame block (it's a service)."
     },
     {
       "api": "rdk:component:generic",
-      "model": "viam:workcell-components:safety-fence"
+      "model": "viam:workcell-components:safety-fence",
+      "description": "Wire-mesh perimeter panel (rails, posts, translucent screen). Frame origin = centerline of the panel base on the floor (z=0 puts it on the floor); local +X runs along the panel."
     },
     {
       "api": "rdk:component:generic",
-      "model": "viam:workcell-components:light-curtain"
+      "model": "viam:workcell-components:light-curtain",
+      "description": "Paired-tower light curtain. Frame origin = floor midway between the two towers (z=0 on the floor); local +X = span (tower-to-tower)."
     },
     {
       "api": "rdk:component:generic",
-      "model": "viam:workcell-components:e-stop"
+      "model": "viam:workcell-components:e-stop",
+      "description": "Mushroom-button on a yellow post. Frame origin = center of the base plate on the floor (z=0 on the floor)."
     },
     {
       "api": "rdk:component:generic",
-      "model": "viam:workcell-components:stack-light"
+      "model": "viam:workcell-components:stack-light",
+      "description": "Multi-segment status beacon (per-segment color + state). Frame origin = center of the base on the floor (z=0 on the floor)."
     },
     {
       "api": "rdk:component:generic",
-      "model": "viam:workcell-components:tote-stack"
+      "model": "viam:workcell-components:tote-stack",
+      "description": "Stack of N identical totes/boxes. Frame origin = bottom face of the bottom-most box; the stack grows from here along stack_axis."
     },
     {
       "api": "rdk:component:generic",
-      "model": "viam:workcell-components:robot-pedestal"
+      "model": "viam:workcell-components:robot-pedestal",
+      "description": "Base under the robot arm (foot, column, flange). Frame origin = center of the base on the floor (z=0 on the floor)."
     },
     {
       "api": "rdk:component:generic",
-      "model": "viam:workcell-components:hmi-cabinet"
+      "model": "viam:workcell-components:hmi-cabinet",
+      "description": "Operator HMI panel on a support post. Frame origin = center of the support post's base on the floor (z=0 on the floor)."
     },
     {
       "api": "rdk:component:generic",
-      "model": "viam:workcell-components:floor-decal"
+      "model": "viam:workcell-components:floor-decal",
+      "description": "Solid or hazard-striped floor decal. Frame origin = bottom face of the decal flush with the floor (z=0 on the floor); the decal extends upward by thickness_mm."
     },
     {
       "api": "rdk:component:generic",
-      "model": "viam:workcell-components:workcell-bounds"
+      "model": "viam:workcell-components:workcell-bounds",
+      "description": "Wire-frame footprint of the cell. Frame origin = centroid of the bounding volume; set frame.translation.z = height_mm/2 to put the floor of the box at z=0."
     }
   ],
   "applications": [

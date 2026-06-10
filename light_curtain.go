@@ -21,6 +21,10 @@ import (
 //
 // Pose comes from the standard frame block. Local +X is span
 // direction (perpendicular to flow); +Z is up.
+//
+// Frame origin: FLOOR midway between the two towers. Set
+// frame.translation.z = 0 to plant the towers on the floor; they
+// extend upward by height_mm.
 var LightCurtainModel = resource.NewModel("viam", "workcell-components", "light-curtain")
 
 const (

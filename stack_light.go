@@ -20,6 +20,10 @@ import (
 //   - "solid": segment renders at full opacity, no animation
 //   - "flash": segment renders with a Flicker animation (~0.6 s period)
 //   - "off":   segment renders dim (opacity 0.15), no animation
+//
+// Frame origin: center of the BASE on the floor. Set
+// frame.translation.z = 0 to plant the stack-light on the floor; the
+// post + segments extend upward.
 var StackLightModel = resource.NewModel("viam", "workcell-components", "stack-light")
 
 const (
