@@ -21,6 +21,7 @@ form editor with a live 3D preview per instance.
 | `viam:workcell-components:hmi-cabinet` | `rdk:component:generic` | Operator HMI panel on a stand. |
 | `viam:workcell-components:floor-decal` | `rdk:component:generic` | Floor stripe or zone marking (solid or hazard). |
 | `viam:workcell-components:workcell-bounds` | `rdk:component:generic` | Wire-frame footprint of the cell. |
+| `viam:workcell-components:scan-tunnel` | `rdk:component:generic` | Fixed-mount barcode/SKU scan tunnel: gantry frame + reader heads + pulsing scan line (1- or 3-sided). |
 | `viam:workcell-components:workcell-scene` | `rdk:service:world_state_store` | Polls every component's `get_visuals` and republishes to the 3D viewer. |
 
 ## Frame origins — where the frame block places each component
@@ -43,6 +44,7 @@ accordingly when you want the component to rest on the floor.
 | `hmi-cabinet` | Center of the support post's base **on the floor**. | `0` |
 | `floor-decal` | Bottom face of the decal **flush with the floor** (decal extends upward by `thickness_mm`). | `0` |
 | `tote-stack` | **Bottom of the bottom-most box**. The stack grows from here along `stack_axis`. | `0` |
+| `scan-tunnel` | **Floor** midway between the posts. Local +X = span (perpendicular to flow). | `0` |
 | `workcell-scene` | n/a (service — no frame block). | — |
 
 Local axes (in every model's own frame) follow Viam's right-handed convention:

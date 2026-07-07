@@ -14,6 +14,7 @@ func main() {
 		// Core workcell components.
 		resource.APIModel{API: generic.API, Model: wcc.PalletModel},
 		resource.APIModel{API: generic.API, Model: wcc.PickStationModel},
+		resource.APIModel{API: generic.API, Model: wcc.ScanTunnelModel},
 		resource.APIModel{API: worldstatestore.API, Model: wcc.WorkcellSceneModel},
 
 		// Safety hardware affordances.

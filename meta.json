@@ -62,6 +62,10 @@
     },
     {
       "api": "rdk:component:generic",
+      "model": "viam:workcell-components:scan-tunnel"
+    },
+    {
+      "api": "rdk:component:generic",
       "model": "viam:workcell-components:workcell-bounds",
       "description": "Wire-frame footprint of the cell. Frame origin = centroid of the bounding volume; set frame.translation.z = height_mm/2 to put the floor of the box at z=0."
     }
