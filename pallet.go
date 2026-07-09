@@ -20,6 +20,12 @@ import (
 // reconfigure (consumers like pack-sequencer fetch on-demand and pick
 // up the new values).
 //
+// Frame origin: the bounding-box CENTROID (Viam convention — dragging
+// the frame in the 3D viewer drags the visible box's center). To rest
+// the pallet on the floor, set frame.translation.z = thickness_mm / 2
+// (~76 mm for the GMA default). Rotations in frame.orientation rotate
+// around this centroid.
+//
 // The pallet's pose still comes from the standard `frame:` block on
 // the resource config — drag-and-save in the 3D viewer works as
 // before. When a `frame.geometry` is present, its dimensions override
@@ -60,6 +66,13 @@ type PalletConfig struct {
 	// Color for the 3D-viewer rendering. RGB 0..255, opacity 0..1
 	// (defaults to 1). When omitted, defaults to wood-tan.
 	Color *Color `json:"color,omitempty"`
+
+	// Style controls how the pallet renders in the 3D viewer: how
+	// many top-deck slats, whether stringers or blocks underneath.
+	// One of "stringer" (default — 3 long stringers), "block" (9-block
+	// grid), "plastic" (single-piece slate-grey). Visual only; motion-
+	// planner collision geometry stays a single bounding box.
+	Style string `json:"style,omitempty"`
 
 	// VisualOptions are forward-looking knobs the future workcell
 	// visualization layer reads. Declaring them now stabilizes the
@@ -272,6 +285,21 @@ func (p *pallet) DoCommand(_ context.Context, cmd map[string]interface{}) (map[s
 	if _, ok := cmd["get_attributes"]; ok {
 		return p.attributesMap(), nil
 	}
+	if _, ok := cmd["get_visuals"]; ok {
+		entries := palletVisuals(
+			p.name.Name,
+			p.pose, p.width, p.length, p.thickness,
+			p.color, p.cfg.Style, p.cfg.VisualOptions,
+		)
+		out, err := visualsToMaps(entries)
+		if err != nil {
+			return nil, fmt.Errorf("get_visuals: %w", err)
+		}
+		return map[string]interface{}{"visuals": out}, nil
+	}
+	if _, ok := cmd["get_schema"]; ok {
+		return schemaToResponse(palletSchema())
+	}
 	if v, ok := cmd["get_pallet_home_pose"]; ok {
 		safety := safetyHeightArg(v, PalletHomeDefaultSafetyHeightMM)
 		return poseToWorldMap(p.palletHomePose(safety)), nil
@@ -452,6 +480,9 @@ func (p *pallet) setAttributes(v interface{}) (map[string]interface{}, error) {
 	if lbl, ok := m["label"].(string); ok {
 		p.cfg.Label = lbl
 	}
+	if st, ok := m["style"].(string); ok {
+		p.cfg.Style = st
+	}
 	applyVisualOptions(&p.cfg.VisualOptions, m)
 	p.logger.Infow("pallet attributes updated via DoCommand")
 	return p.attributesMap(), nil
@@ -473,6 +504,7 @@ func (p *pallet) attributesMap() map[string]interface{} {
 		"length_mm":    p.length,
 		"thickness_mm": p.thickness,
 		"color":        p.color.toMap(),
+		"style":        normalizePalletStyle(p.cfg.Style),
 		"pose":         poseToWorldMap(p.pose),
 		"summary":      p.summaryString(),
 	}
@@ -502,6 +534,25 @@ func (p *pallet) Geometries(_ context.Context, _ map[string]any) ([]spatialmath.
 		return nil, fmt.Errorf("pallet Geometries: %w", err)
 	}
 	return []spatialmath.Geometry{box}, nil
+}
+
+// palletSchema returns the webapp-edit schema for the pallet model.
+// Geometry attributes scale the visual + collision-bounding box;
+// style switches the under-deck composition (stringer/block/plastic).
+func palletSchema() []schemaEntry {
+	return []schemaEntry{
+		numEntry("width_mm", "Width", schemaGroupGeometry, "mm", 50, 5000, 1),
+		numEntry("length_mm", "Length", schemaGroupGeometry, "mm", 50, 5000, 1),
+		numEntry("thickness_mm", "Thickness", schemaGroupGeometry, "mm", 5, 500, 1),
+		enumEntry("style", "Style", schemaGroupGeometry,
+			[]string{"stringer", "block", "plastic"}),
+		// Plastic pallets render a single slate-grey body — the top-deck
+		// color only applies to the slatted stringer/block styles.
+		colorEntry("color", "Top-deck color", schemaGroupVisual).whenNot("style", "plastic"),
+		boolEntry("visible", "Visible", schemaGroupVisual),
+		showAxesEntry(),
+		numEntry("opacity", "Opacity multiplier", schemaGroupVisual, "", 0, 1, 0.05),
+	}
 }
 
 func poseToWorldMap(pose spatialmath.Pose) map[string]interface{} {

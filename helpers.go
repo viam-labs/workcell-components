@@ -1,6 +1,10 @@
 package workcellcomponents
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/golang/geo/r3"
+)
 
 // asFloat coerces an interface{} from a DoCommand args map into a
 // float64, handling the typical JSON numeric shapes that arrive at the
@@ -166,4 +170,49 @@ func mergeVisualOptions(out map[string]interface{}, opts VisualOptions) {
 		opacity = *opts.Opacity
 	}
 	out["opacity"] = opacity
+}
+
+// defaultLen returns v if positive, else fallback. Used by affordance
+// constructors that want config to override a hard-coded default.
+func defaultLen(v, fallback float64) float64 {
+	if v > 0 {
+		return v
+	}
+	return fallback
+}
+
+// clamp01 clamps a value into [0, 1].
+func clamp01(v float64) float64 {
+	if v < 0 {
+		return 0
+	}
+	if v > 1 {
+		return 1
+	}
+	return v
+}
+
+// r3vec is a tiny constructor for r3.Vector. Convenience.
+func r3vec(x, y, z float64) r3.Vector {
+	return r3.Vector{X: x, Y: y, Z: z}
+}
+
+// coerceStringSlice normalizes a DoCommand argument that should be a
+// list of strings. May arrive as []string (in-process Go) or []any
+// (gRPC structpb). Anything else returns nil — caller treats as
+// "unset / no change."
+func coerceStringSlice(v interface{}) []string {
+	switch tv := v.(type) {
+	case []string:
+		return tv
+	case []interface{}:
+		out := make([]string, 0, len(tv))
+		for _, x := range tv {
+			if s, ok := x.(string); ok {
+				out = append(out, s)
+			}
+		}
+		return out
+	}
+	return nil
 }
