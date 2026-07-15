@@ -260,6 +260,13 @@ func pickStationColor(cfg *PickStationConfig) Color {
 
 func (p *pickStation) Name() resource.Name { return p.name }
 
+// Status implements resource.Resource.
+func (p *pickStation) Status(_ context.Context) (map[string]interface{}, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.statusMap(), nil
+}
+
 // DoCommand surface:
 //
 //	{"get_pose": true}             → station's frame pose (world)
