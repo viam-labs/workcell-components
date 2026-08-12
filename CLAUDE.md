@@ -2,7 +2,7 @@
 
 ## What this is
 
-Viam module that registers the components and the scene service of an automation workcell. As of 0.6.0 there are twelve registered models:
+Viam module that registers the components and the scene service of an automation workcell. As of 0.7.0 there are fifteen registered models (thirteen visual/affordance models, plus two sensors):
 
 ### Core components
 
@@ -127,9 +127,12 @@ workcell-components/
 ├── hmi_cabinet.go             (Tier 3)
 ├── floor_decal.go             (Tier 3)
 ├── workcell_bounds.go         (Tier 3)
+├── scan_tunnel.go             (Tier 3)
+├── box_detect.go              (sensor: pick-station infeed presence)
+├── pallet_empty.go            (sensor: pallet occupancy from the pack sequencer)
 ├── visuals_wire_test.go       (Phase A/B/C/E unit tests)
 ├── pure_test.go               (existing pose/dim tests)
-└── cmd/module/main.go         (registers all 12 models via module.ModularMain)
+└── cmd/module/main.go         (registers all 15 models via module.ModularMain)
 ```
 
 ## Build + publish

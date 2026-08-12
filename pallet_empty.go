@@ -1,10 +1,10 @@
 package workcellcomponents
 
 import (
-	"bytes"
 	"context"
 	"errors"
-	"sync"
+	"fmt"
+	"strings"
 
 	"go.viam.com/rdk/components/sensor"
 	"go.viam.com/rdk/logging"
@@ -14,42 +14,40 @@ import (
 
 // PalletEmptyModel — reports how much of the pallet is occupied.
 //
-// The reading is DERIVED, not told: it counts the box transforms the pack
-// sequencer is holding. Whoever placed those boxes does not have to report
-// anything, and a pallet cleared by another operator reads as empty here
-// immediately.
+// The reading is DERIVED, not told: it asks the pack sequencer for the pack
+// progress it already maintains. Whoever placed the boxes reports each
+// placement to the sequencer as part of placing it, so this sensor reads cell
+// state rather than a caller's variable, and a pallet reset on the sequencer
+// reads as empty here on the next reading.
+//
+// Deliberately NOT counting transforms from ListUUIDs: those are drawn box
+// visuals, which include the box sitting at the pick-station before it is
+// grasped and the one riding the gripper in transit. Counting them reports a
+// pallet as occupied before anything is on it.
 var PalletEmptyModel = resource.NewModel("viam", "workcell-components", "pallet-empty")
 
-// Transform UUIDs for boxes are "box-<seq>" (or "box-<seq>-v<N>" while a box
-// is in flight), so this prefix identifies them.
-var boxUUIDPrefix = []byte("box-")
-
-const defaultPalletCapacity = 8
+const defaultWorldStateStoreName = "pack-sequencer"
 
 type PalletEmptyConfig struct {
 	// WorldStateStore names the world state store holding the pack state.
 	// Defaults to "pack-sequencer".
 	WorldStateStore string `json:"world_state_store,omitempty"`
-
-	// Capacity is how many boxes a full pallet holds. Used only to report
-	// pallet_full; zero disables that reading.
-	Capacity int `json:"capacity,omitempty"`
 }
 
 func (c *PalletEmptyConfig) Validate(_ string) ([]string, []string, error) {
-	if c.Capacity < 0 {
-		return nil, nil, errors.New("capacity must be zero or greater")
+	if c.WorldStateStore != "" && strings.TrimSpace(c.WorldStateStore) == "" {
+		return nil, nil, errors.New("world_state_store must name a resource")
 	}
-	// Declaring the store as a required dependency means viam-server builds
-	// this sensor only once the store is running.
-	return []string{c.storeName()}, nil, nil
+	// Fully qualified, so the graph edge is API-checked rather than resolved
+	// by simple-name search across every component and service.
+	return []string{worldstatestore.Named(c.storeName()).String()}, nil, nil
 }
 
 func (c *PalletEmptyConfig) storeName() string {
-	if c.WorldStateStore == "" {
-		return "pack-sequencer"
+	if name := strings.TrimSpace(c.WorldStateStore); name != "" {
+		return name
 	}
-	return c.WorldStateStore
+	return defaultWorldStateStoreName
 }
 
 func init() {
@@ -60,16 +58,16 @@ func init() {
 	)
 }
 
+// store and logger are set once in the constructor and never mutated:
+// AlwaysRebuild means a configuration change destroys and rebuilds this
+// resource, so there is no reconfigure path and no lock is needed.
 type palletEmpty struct {
 	resource.Named
 	resource.AlwaysRebuild
 	resource.TriviallyCloseable
 
 	logger logging.Logger
-
-	mu       sync.Mutex
-	store    worldstatestore.Service
-	capacity int
+	store  worldstatestore.Service
 }
 
 func newPalletEmpty(
@@ -89,52 +87,40 @@ func newPalletEmpty(
 		return nil, err
 	}
 
-	capacity := cfg.Capacity
-	if capacity == 0 {
-		capacity = defaultPalletCapacity
-	}
-
 	return &palletEmpty{
-		Named:    conf.ResourceName().AsNamed(),
-		logger:   logger,
-		store:    store,
-		capacity: capacity,
+		Named:  conf.ResourceName().AsNamed(),
+		logger: logger,
+		store:  store,
 	}, nil
 }
 
 func (p *palletEmpty) Readings(
 	ctx context.Context, _ map[string]interface{},
 ) (map[string]interface{}, error) {
-	p.mu.Lock()
-	store, capacity := p.store, p.capacity
-	p.mu.Unlock()
-
-	uuids, err := store.ListUUIDs(ctx, nil)
+	status, err := p.store.DoCommand(ctx, map[string]interface{}{"get_status": true})
 	if err != nil {
+		// A store that is up but erroring is otherwise invisible on the card.
+		p.logger.Warnw("pallet-empty: get_status failed", "error", err)
 		return nil, err
 	}
 
-	count := 0
-	for _, u := range uuids {
-		if bytes.HasPrefix(u, boxUUIDPrefix) {
-			count++
-		}
-	}
+	placed := int(asFloat(status["placed"]))
+	total := int(asFloat(status["total"]))
+	complete, _ := status["complete"].(bool)
 
 	return map[string]interface{}{
-		"pallet_empty":    count == 0,
-		"pallet_full":     count >= capacity,
-		"boxes_on_pallet": count,
-		"capacity":        capacity,
+		"pallet_empty":    placed == 0,
+		"pallet_full":     complete || (total > 0 && placed >= total),
+		"boxes_on_pallet": placed,
+		"capacity":        total,
 	}, nil
 }
 
 func (p *palletEmpty) DoCommand(
-	_ context.Context, _ map[string]interface{},
+	_ context.Context, cmd map[string]interface{},
 ) (map[string]interface{}, error) {
-	// The reading is derived from the world state store, so there is nothing
-	// here to set. Clearing the pallet is the sequencer's job.
-	return map[string]interface{}{
-		"error": "pallet-empty has no commands; it reads the world state store",
-	}, nil
+	// The reading is derived from the sequencer, so there is nothing here to
+	// set. Clearing the pallet is the sequencer's job (reset_progress).
+	return nil, fmt.Errorf("pallet-empty: no commands, it reads %s: %v",
+		defaultWorldStateStoreName, cmd)
 }

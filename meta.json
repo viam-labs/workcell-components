@@ -77,7 +77,7 @@
     {
       "api": "rdk:component:sensor",
       "model": "viam:workcell-components:pallet-empty",
-      "description": "Pallet occupancy, derived by counting box transforms in a world state store (default pack-sequencer). Readings: pallet_empty, pallet_full, boxes_on_pallet, capacity."
+      "description": "Pallet occupancy, derived from the pack sequencer's own progress (world_state_store, default pack-sequencer). Readings: pallet_empty, pallet_full, boxes_on_pallet, capacity. Requires the placer to report placements to the sequencer."
     }
   ],
   "applications": [

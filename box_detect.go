@@ -3,6 +3,7 @@ package workcellcomponents
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -22,11 +23,16 @@ import (
 // cell rather than assume a box is always there.
 var BoxDetectModel = resource.NewModel("viam", "workcell-components", "box-detect")
 
-const defaultBoxDetectIntervalSec = 4.0
+const (
+	defaultBoxDetectIntervalSec = 4.0
+	// A day is far past any useful infeed rate, and keeps the float to
+	// time.Duration conversion well inside int64.
+	maxBoxDetectIntervalSec = 86400.0
+)
 
 type BoxDetectConfig struct {
 	// IntervalSeconds is how long the infeed takes to present the next box
-	// after one is taken.
+	// after one is taken. Omit it, or set 0, for the 4-second default.
 	IntervalSeconds float64 `json:"interval_seconds,omitempty"`
 
 	// StartEmpty presents no box until the first interval has elapsed.
@@ -37,6 +43,10 @@ type BoxDetectConfig struct {
 func (c *BoxDetectConfig) Validate(_ string) ([]string, []string, error) {
 	if c.IntervalSeconds < 0 {
 		return nil, nil, errors.New("interval_seconds must be zero or greater")
+	}
+	if c.IntervalSeconds > maxBoxDetectIntervalSec {
+		return nil, nil, fmt.Errorf("interval_seconds must be %.0f or less",
+			maxBoxDetectIntervalSec)
 	}
 	return nil, nil, nil
 }
@@ -91,19 +101,15 @@ func newBoxDetect(
 }
 
 // present reports whether a box is waiting, and how long until one is.
-// Caller holds the lock.
+// Read-only; caller holds the lock.
 func (b *boxDetect) present() (bool, time.Duration) {
 	if b.readyAt.IsZero() {
 		return true, 0
 	}
-	remaining := time.Until(b.readyAt)
-	if remaining <= 0 {
-		// The box has arrived; latch it so the reading stops depending on
-		// the clock until it is taken again.
-		b.readyAt = time.Time{}
-		return true, 0
+	if remaining := time.Until(b.readyAt); remaining > 0 {
+		return false, remaining
 	}
-	return false, remaining
+	return true, 0
 }
 
 func (b *boxDetect) Readings(
@@ -125,8 +131,10 @@ func (b *boxDetect) DoCommand(
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
+	// Truthiness rather than an exact `== true`: a protobuf Struct round-trip
+	// can deliver the flag as a number or a string, and the caller meant yes.
 	switch {
-	case cmd["take"] == true:
+	case isTruthy(cmd["take"]):
 		here, _ := b.present()
 		if !here {
 			return map[string]interface{}{
@@ -140,13 +148,28 @@ func (b *boxDetect) DoCommand(
 			"seconds_until_next": b.interval.Seconds(),
 		}, nil
 
-	case cmd["reset"] == true:
+	case isTruthy(cmd["reset"]):
 		b.readyAt = time.Time{}
 		return map[string]interface{}{"box_present": true}, nil
 
 	default:
-		return map[string]interface{}{
-			"error": "unknown command; expected take or reset",
-		}, nil
+		return nil, fmt.Errorf("box-detect: unknown command %v", cmd)
+	}
+}
+
+// isTruthy reads a DoCommand flag that may arrive as a bool, a number, or a
+// string depending on how the caller's SDK encoded it.
+func isTruthy(v interface{}) bool {
+	switch t := v.(type) {
+	case bool:
+		return t
+	case float64:
+		return t != 0
+	case int:
+		return t != 0
+	case string:
+		return t == "true" || t == "True" || t == "1"
+	default:
+		return false
 	}
 }

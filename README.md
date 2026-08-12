@@ -23,6 +23,8 @@ form editor with a live 3D preview per instance.
 | `viam:workcell-components:workcell-bounds` | `rdk:component:generic` | Wire-frame footprint of the cell. |
 | `viam:workcell-components:scan-tunnel` | `rdk:component:generic` | Fixed-mount barcode/SKU scan tunnel: gantry frame + reader heads + pulsing scan line (1- or 3-sided). |
 | `viam:workcell-components:workcell-scene` | `rdk:service:world_state_store` | Polls every component's `get_visuals` and republishes to the 3D viewer. |
+| `viam:workcell-components:box-detect` | `rdk:component:sensor` | Presence sensor over the pick-station infeed. Simulates the conveyor: a box waits until taken, the next arrives after `interval_seconds`. |
+| `viam:workcell-components:pallet-empty` | `rdk:component:sensor` | Pallet occupancy, read from the pack sequencer's own progress. Reports `pallet_empty`, `pallet_full`, `boxes_on_pallet`, `capacity`. |
 
 ## Frame origins — where the frame block places each component
 
