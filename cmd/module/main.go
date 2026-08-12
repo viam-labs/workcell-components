@@ -4,6 +4,7 @@ import (
 	wcc "workcellcomponents"
 
 	"go.viam.com/rdk/components/generic"
+	"go.viam.com/rdk/components/sensor"
 	"go.viam.com/rdk/module"
 	"go.viam.com/rdk/resource"
 	"go.viam.com/rdk/services/worldstatestore"
@@ -16,6 +17,10 @@ func main() {
 		resource.APIModel{API: generic.API, Model: wcc.PickStationModel},
 		resource.APIModel{API: generic.API, Model: wcc.ScanTunnelModel},
 		resource.APIModel{API: worldstatestore.API, Model: wcc.WorkcellSceneModel},
+
+		// Cell state, for control logic that runs unattended.
+		resource.APIModel{API: sensor.API, Model: wcc.BoxDetectModel},
+		resource.APIModel{API: sensor.API, Model: wcc.PalletEmptyModel},
 
 		// Safety hardware affordances.
 		resource.APIModel{API: generic.API, Model: wcc.SafetyFenceModel},

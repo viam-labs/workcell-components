@@ -68,6 +68,16 @@
       "api": "rdk:component:generic",
       "model": "viam:workcell-components:workcell-bounds",
       "description": "Wire-frame footprint of the cell. Frame origin = centroid of the bounding volume; set frame.translation.z = height_mm/2 to put the floor of the box at z=0."
+    },
+    {
+      "api": "rdk:component:sensor",
+      "model": "viam:workcell-components:box-detect",
+      "description": "Presence sensor over the pick-station infeed. Readings: box_present, seconds_until_next. DoCommand {\"take\": true} consumes the waiting box and starts the next interval."
+    },
+    {
+      "api": "rdk:component:sensor",
+      "model": "viam:workcell-components:pallet-empty",
+      "description": "Pallet occupancy, derived by counting box transforms in a world state store (default pack-sequencer). Readings: pallet_empty, pallet_full, boxes_on_pallet, capacity."
     }
   ],
   "applications": [
