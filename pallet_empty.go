@@ -94,17 +94,34 @@ func newPalletEmpty(
 	}, nil
 }
 
+// The pack sequencer renamed its progress verb between versions: 0.3.0, which
+// the viam101-workcell fragment pins, answers get_progress and reports
+// placed_count; 0.4.0 and later answer get_status and report placed. Ask for
+// both rather than pinning this sensor to one sequencer.
+var progressVerbs = []string{"get_progress", "get_status"}
+
 func (p *palletEmpty) Readings(
 	ctx context.Context, _ map[string]interface{},
 ) (map[string]interface{}, error) {
-	status, err := p.store.DoCommand(ctx, map[string]interface{}{"get_status": true})
+	var status map[string]interface{}
+	var err error
+	for _, verb := range progressVerbs {
+		status, err = p.store.DoCommand(ctx, map[string]interface{}{verb: true})
+		if err == nil {
+			break
+		}
+	}
 	if err != nil {
 		// A store that is up but erroring is otherwise invisible on the card.
-		p.logger.Warnw("pallet-empty: get_status failed", "error", err)
+		p.logger.Warnw("pallet-empty: no progress verb answered",
+			"tried", progressVerbs, "error", err)
 		return nil, err
 	}
 
-	placed := int(asFloat(status["placed"]))
+	placed := int(asFloat(status["placed_count"]))
+	if _, ok := status["placed_count"]; !ok {
+		placed = int(asFloat(status["placed"]))
+	}
 	total := int(asFloat(status["total"]))
 	complete, _ := status["complete"].(bool)
 
