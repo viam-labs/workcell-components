@@ -26,12 +26,14 @@ const (
 // the typical industrial look: dark blue painted side rails, machined-
 // aluminum rollers, gloss-black legs.
 var (
-	pickStationRailColor      = Color{R: 50, G: 80, B: 120, A: 1}   // dark blue
-	pickStationRollerColor    = Color{R: 180, G: 184, B: 190, A: 1} // brushed aluminum
-	pickStationLegColor       = Color{R: 28, G: 28, B: 32, A: 1}    // gloss black
-	pickStationArrowColor     = Color{R: 220, G: 220, B: 60, A: 1}  // safety yellow
-	pickStationTargetColor    = Color{R: 60, G: 220, B: 120, A: 0.35}
-	pickStationInfeedBoxColor = Color{R: 196, G: 158, B: 108, A: 1} // cardboard
+	pickStationRailColor   = Color{R: 50, G: 80, B: 120, A: 1}   // dark blue
+	pickStationRollerColor = Color{R: 180, G: 184, B: 190, A: 1} // brushed aluminum
+	pickStationLegColor    = Color{R: 28, G: 28, B: 32, A: 1}    // gloss black
+	pickStationArrowColor  = Color{R: 220, G: 220, B: 60, A: 1}  // safety yellow
+	pickStationTargetColor = Color{R: 60, G: 220, B: 120, A: 0.35}
+	// Matches the pack-sequencer's placed-box color exactly, so the
+	// box the arm lifts looks like the box that arrived.
+	pickStationInfeedBoxColor = Color{R: 176, G: 136, B: 80, A: 1}
 )
 
 // Default infeed-box dims: a hair under the course's 200x150x100 box

@@ -50,7 +50,7 @@ var WorkcellSceneModel = resource.NewModel("viam", "workcell-components", "workc
 
 const (
 	defaultSceneTickIntervalSecs = 1.0
-	minSceneTickIntervalSecs     = 0.2 // clamp — don't hammer sibling DoCommand
+	minSceneTickIntervalSecs     = 0.1 // clamp — don't hammer sibling DoCommand
 	defaultParentFrame           = "world"
 	defaultAnimationTickHz       = 30.0
 )
@@ -68,7 +68,7 @@ type WorkcellSceneConfig struct {
 	PickStationNames []string `json:"pick_station_names,omitempty"`
 
 	// TickIntervalSecs is the poll interval for republishing.
-	// Defaults to 1.0; clamped to [0.2, ∞).
+	// Defaults to 1.0; clamped to [0.1, ∞).
 	TickIntervalSecs float64 `json:"tick_interval_secs,omitempty"`
 }
 
