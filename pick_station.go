@@ -224,6 +224,7 @@ func newPickStation(
 	cornerPose := spatialmath.Compose(centerPose, cornerOffset)
 
 	logger.Infow("pick-station configured",
+		"infeed_box_detect", cfg.InfeedBoxDetect,
 		"corner_x", cornerPose.Point().X, "corner_y", cornerPose.Point().Y, "corner_z", cornerPose.Point().Z,
 		"width_mm", w, "length_mm", l, "thickness_mm", t,
 		"pitch_incline_deg", pitchInclineDeg, "roll_incline_deg", rollInclineDeg, "yaw_deg", yaw,
@@ -622,6 +623,8 @@ func (p *pickStation) infeedState(ctx context.Context) *infeedBoxState {
 	}
 	rd, err := p.infeed.Readings(ctx, nil)
 	if err != nil {
+		p.logger.Warnw("infeed box-detect readings failed; infeed box not rendered",
+			"error", err)
 		return nil
 	}
 	st := &infeedBoxState{dims: Vec3D{
