@@ -9,6 +9,7 @@ import (
 	"github.com/golang/geo/r3"
 	wcsh "github.com/viam-labs/viamkit/geom"
 	"go.viam.com/rdk/components/generic"
+	"go.viam.com/rdk/components/sensor"
 	"go.viam.com/rdk/logging"
 	"go.viam.com/rdk/referenceframe"
 	"go.viam.com/rdk/resource"
@@ -119,6 +120,20 @@ type PickStationConfig struct {
 	// conveyor is "live."
 	RollerSpinPeriodS float64 `json:"roller_spin_period_s,omitempty"`
 
+	// InfeedBoxDetect names a box-detect sensor on the same machine.
+	// When set, the station renders an infeed box that travels down
+	// the bed in time with the sensor's countdown, and waits at the
+	// pickup point while the sensor reports box_present. The sensor
+	// is declared as an optional dependency: a station without one
+	// renders exactly as before.
+	InfeedBoxDetect string `json:"infeed_box_detect,omitempty"`
+
+	// InfeedBoxDimsMM sizes the rendered infeed box. Defaults to
+	// 196x146x98 — a hair under the course box, so the picked
+	// (pack-sequencer-drawn) box hides it while the two coincide at
+	// the grasp pose.
+	InfeedBoxDimsMM *Vec3D `json:"infeed_box_dims_mm,omitempty"`
+
 	Label string `json:"label,omitempty"`
 
 	// VisualOptions — see pallet.VisualOptions for semantics. No
@@ -136,6 +151,10 @@ func (c *PickStationConfig) Validate(_ string) ([]string, []string, error) {
 		if err := validateColor(*c.Color); err != nil {
 			return nil, nil, err
 		}
+	}
+	if c.InfeedBoxDetect != "" {
+		// Optional: a machine without the sensor still gets a station.
+		return nil, []string{sensor.Named(c.InfeedBoxDetect).String()}, nil
 	}
 	return nil, nil, nil
 }
@@ -165,11 +184,15 @@ type pickStation struct {
 	width, length, thickness float64
 	color                    Color
 	cfg                      PickStationConfig
+
+	// infeed is the paired box-detect sensor, nil when the config
+	// names none (or names one the machine does not have).
+	infeed sensor.Sensor
 }
 
 func newPickStation(
 	_ context.Context,
-	_ resource.Dependencies,
+	deps resource.Dependencies,
 	conf resource.Config,
 	logger logging.Logger,
 ) (resource.Resource, error) {
@@ -204,6 +227,17 @@ func newPickStation(
 		"color_r", color.R, "color_g", color.G, "color_b", color.B,
 	)
 
+	var infeed sensor.Sensor
+	if cfg.InfeedBoxDetect != "" {
+		if snsr, err := sensor.FromDependencies(deps, cfg.InfeedBoxDetect); err == nil {
+			infeed = snsr
+		} else {
+			logger.Warnw(
+				"infeed_box_detect names a sensor this machine does not have; infeed box not rendered",
+				"sensor", cfg.InfeedBoxDetect, "error", err)
+		}
+	}
+
 	return &pickStation{
 		name:      conf.ResourceName(),
 		logger:    logger,
@@ -213,6 +247,7 @@ func newPickStation(
 		thickness: t,
 		color:     color,
 		cfg:       *cfg,
+		infeed:    infeed,
 	}, nil
 }
 
@@ -290,7 +325,7 @@ func (p *pickStation) Name() resource.Name { return p.name }
 // All set_* responses include `{"persisted": false, "hint":
 // "…live until reconfigure…"}` so callers see that in-memory edits
 // revert on next config reload.
-func (p *pickStation) DoCommand(_ context.Context, cmd map[string]interface{}) (map[string]interface{}, error) {
+func (p *pickStation) DoCommand(ctx context.Context, cmd map[string]interface{}) (map[string]interface{}, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -347,6 +382,7 @@ func (p *pickStation) DoCommand(_ context.Context, cmd map[string]interface{}) (
 			p.cfg.BoxOriginOffsetMM,
 			p.cfg.BoxThetaDeg,
 			p.cfg.RollerSpinPeriodS,
+			p.infeedState(ctx),
 		)
 		out, err := visualsToMaps(entries)
 		if err != nil {
@@ -573,6 +609,37 @@ func (p *pickStation) boxOffsetMap() map[string]interface{} {
 // frame.orientation); composing with the box offset and theta tilts
 // the gripper to follow the surface naturally, oriented along the
 // box's local axes.
+// infeedState reads the paired box-detect sensor into the visual's
+// terms: is a box waiting, and how far along the bed is the next one.
+// Returns nil (no infeed box drawn) with no sensor or a failed read.
+// Caller must hold p.mu; the sensor has its own lock.
+func (p *pickStation) infeedState(ctx context.Context) *infeedBoxState {
+	if p.infeed == nil {
+		return nil
+	}
+	rd, err := p.infeed.Readings(ctx, nil)
+	if err != nil {
+		return nil
+	}
+	st := &infeedBoxState{dims: Vec3D{
+		X: defaultInfeedBoxWidthMM,
+		Y: defaultInfeedBoxLengthMM,
+		Z: defaultInfeedBoxHeightMM,
+	}}
+	if d := p.cfg.InfeedBoxDimsMM; d != nil && d.X > 0 && d.Y > 0 && d.Z > 0 {
+		st.dims = *d
+	}
+	if v, ok := rd["box_present"].(bool); ok {
+		st.present = v
+	}
+	remaining := asFloat(rd["seconds_until_next"])
+	interval := asFloat(rd["interval_seconds"])
+	if !st.present && interval > 0 {
+		st.fraction = 1 - remaining/interval
+	}
+	return st
+}
+
 // Caller must hold p.mu.
 func (p *pickStation) pickupPose() spatialmath.Pose {
 	v := p.cfg.BoxOriginOffsetMM
@@ -698,7 +765,7 @@ func pickStationSchema() []schemaEntry {
 }
 
 // decomposeRPYDeg returns roll/pitch/yaw (degrees) from any
-// spatialmath.Orientation, using the Tait-Bryan z-y'-x'' convention
+// spatialmath.Orientation, using the Tait-Bryan z-y'-x” convention
 // that matches spatialmath.EulerAngles.
 func decomposeRPYDeg(o spatialmath.Orientation) (roll, pitch, yaw float64) {
 	if o == nil {

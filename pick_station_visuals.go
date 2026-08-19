@@ -26,12 +26,29 @@ const (
 // the typical industrial look: dark blue painted side rails, machined-
 // aluminum rollers, gloss-black legs.
 var (
-	pickStationRailColor    = Color{R: 50, G: 80, B: 120, A: 1}   // dark blue
-	pickStationRollerColor  = Color{R: 180, G: 184, B: 190, A: 1} // brushed aluminum
-	pickStationLegColor     = Color{R: 28, G: 28, B: 32, A: 1}    // gloss black
-	pickStationArrowColor  = Color{R: 220, G: 220, B: 60, A: 1} // safety yellow
-	pickStationTargetColor = Color{R: 60, G: 220, B: 120, A: 0.35}
+	pickStationRailColor      = Color{R: 50, G: 80, B: 120, A: 1}   // dark blue
+	pickStationRollerColor    = Color{R: 180, G: 184, B: 190, A: 1} // brushed aluminum
+	pickStationLegColor       = Color{R: 28, G: 28, B: 32, A: 1}    // gloss black
+	pickStationArrowColor     = Color{R: 220, G: 220, B: 60, A: 1}  // safety yellow
+	pickStationTargetColor    = Color{R: 60, G: 220, B: 120, A: 0.35}
+	pickStationInfeedBoxColor = Color{R: 196, G: 158, B: 108, A: 1} // cardboard
 )
+
+// Default infeed-box dims: a hair under the course's 200x150x100 box
+// so the picked box hides this one while the two coincide.
+const (
+	defaultInfeedBoxWidthMM  = 196.0
+	defaultInfeedBoxLengthMM = 146.0
+	defaultInfeedBoxHeightMM = 98.0
+)
+
+// infeedBoxState is what the paired box-detect sensor said, reduced to
+// the visual's terms.
+type infeedBoxState struct {
+	present  bool    // a box is waiting at the pickup point
+	fraction float64 // 0..1 progress of the next box down the bed
+	dims     Vec3D
+}
 
 // pickStationVisuals returns the typed visual primitives that compose
 // the pick-station: a roller bed, two side rails, four legs reaching
@@ -54,6 +71,7 @@ func pickStationVisuals(
 	boxOriginOffset *Vec3D,
 	boxThetaDeg float64,
 	rollerSpinPeriodS float64,
+	infeed *infeedBoxState,
 ) []visualWire {
 	if opts.Visible != nil && !*opts.Visible {
 		return groupUnderFrame(name, centerPose, false, nil)
@@ -203,6 +221,47 @@ func pickStationVisuals(
 			compose(centerPose, localCenterX, localCenterY, localCenterZ, 0, 0, 1, boxThetaDeg),
 			120, 120, 120,
 			pickStationTargetColor, opts,
+		))
+	}
+
+	// Infeed box — driven by the paired box-detect sensor. While the
+	// sensor counts down, the box travels the bed toward the pickup
+	// point; while box_present, it waits there.
+	if infeed != nil && boxOriginOffset != nil {
+		px := boxOriginOffset.X - width/2
+		py := boxOriginOffset.Y - length/2
+		bz := boxOriginOffset.Z + thickness/2 + infeed.dims.Z/2
+		nx, ny, _ := normalizeDir(conveyorDir)
+		// Entry point: walk backward from the pickup along the
+		// conveyor direction to the bed's upstream edge (dominant
+		// axis decides which edge).
+		ex, ey := px, py
+		if math.Abs(ny) >= math.Abs(nx) && ny != 0 {
+			edge := -length / 2
+			if ny < 0 {
+				edge = length / 2
+			}
+			t := (py - edge) / ny
+			ex, ey = px-nx*t, py-ny*t
+		} else if nx != 0 {
+			edge := -width / 2
+			if nx < 0 {
+				edge = width / 2
+			}
+			t := (px - edge) / nx
+			ex, ey = px-nx*t, py-ny*t
+		}
+		bx, by := px, py
+		if !infeed.present {
+			f := math.Max(0, math.Min(1, infeed.fraction))
+			bx = ex + (px-ex)*f
+			by = ey + (py-ey)*f
+		}
+		out = append(out, boxAt(
+			fmt.Sprintf("%s/infeed-box", name),
+			compose(centerPose, bx, by, bz, 0, 0, 1, boxThetaDeg),
+			infeed.dims.X, infeed.dims.Y, infeed.dims.Z,
+			pickStationInfeedBoxColor, opts,
 		))
 	}
 

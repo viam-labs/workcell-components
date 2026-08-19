@@ -122,6 +122,7 @@ func (b *boxDetect) Readings(
 	return map[string]interface{}{
 		"box_present":        here,
 		"seconds_until_next": remaining.Seconds(),
+		"interval_seconds":   b.interval.Seconds(),
 	}, nil
 }
 
