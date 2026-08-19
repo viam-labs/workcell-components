@@ -124,8 +124,8 @@ type PickStationConfig struct {
 	// When set, the station renders an infeed box that travels down
 	// the bed in time with the sensor's countdown, and waits at the
 	// pickup point while the sensor reports box_present. The sensor
-	// is declared as an optional dependency: a station without one
-	// renders exactly as before.
+	// becomes a required dependency of the station; without the
+	// attribute the station renders exactly as before.
 	InfeedBoxDetect string `json:"infeed_box_detect,omitempty"`
 
 	// InfeedBoxDimsMM sizes the rendered infeed box. Defaults to
@@ -153,8 +153,11 @@ func (c *PickStationConfig) Validate(_ string) ([]string, []string, error) {
 		}
 	}
 	if c.InfeedBoxDetect != "" {
-		// Optional: a machine without the sensor still gets a station.
-		return nil, []string{sensor.Named(c.InfeedBoxDetect).String()}, nil
+		// Required, deliberately: optional dependencies do not order
+		// the build graph, so after a reconfigure the station can be
+		// rebuilt before the sensor exists and silently lose it. A
+		// config that names a sensor wants the sensor.
+		return []string{sensor.Named(c.InfeedBoxDetect).String()}, nil, nil
 	}
 	return nil, nil, nil
 }
