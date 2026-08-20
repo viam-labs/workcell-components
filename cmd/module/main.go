@@ -21,6 +21,7 @@ func main() {
 		// Cell state, for control logic that runs unattended.
 		resource.APIModel{API: sensor.API, Model: wcc.BoxDetectModel},
 		resource.APIModel{API: sensor.API, Model: wcc.PalletEmptyModel},
+		resource.APIModel{API: sensor.API, Model: wcc.TrayDockModel},
 
 		// Safety hardware affordances.
 		resource.APIModel{API: generic.API, Model: wcc.SafetyFenceModel},
