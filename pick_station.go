@@ -134,6 +134,11 @@ type PickStationConfig struct {
 	// the grasp pose.
 	InfeedBoxDimsMM *Vec3D `json:"infeed_box_dims_mm,omitempty"`
 
+	// InfeedBoxColor paints the rendered infeed box. Defaults to
+	// cardboard. Set it to whatever the cell's placed boxes render
+	// as, so the arriving box and the picked box read as one object.
+	InfeedBoxColor *Color `json:"infeed_box_color,omitempty"`
+
 	Label string `json:"label,omitempty"`
 
 	// VisualOptions — see pallet.VisualOptions for semantics. No
@@ -627,13 +632,19 @@ func (p *pickStation) infeedState(ctx context.Context) *infeedBoxState {
 			"error", err)
 		return nil
 	}
-	st := &infeedBoxState{dims: Vec3D{
-		X: defaultInfeedBoxWidthMM,
-		Y: defaultInfeedBoxLengthMM,
-		Z: defaultInfeedBoxHeightMM,
-	}}
+	st := &infeedBoxState{
+		dims: Vec3D{
+			X: defaultInfeedBoxWidthMM,
+			Y: defaultInfeedBoxLengthMM,
+			Z: defaultInfeedBoxHeightMM,
+		},
+		color: pickStationInfeedBoxColor,
+	}
 	if d := p.cfg.InfeedBoxDimsMM; d != nil && d.X > 0 && d.Y > 0 && d.Z > 0 {
 		st.dims = *d
+	}
+	if c := p.cfg.InfeedBoxColor; c != nil {
+		st.color = *c
 	}
 	if v, ok := rd["box_present"].(bool); ok {
 		st.present = v

@@ -50,6 +50,7 @@ type infeedBoxState struct {
 	present  bool    // a box is waiting at the pickup point
 	fraction float64 // 0..1 progress of the next box down the bed
 	dims     Vec3D
+	color    Color
 }
 
 // pickStationVisuals returns the typed visual primitives that compose
@@ -263,7 +264,7 @@ func pickStationVisuals(
 			fmt.Sprintf("%s/infeed-box", name),
 			compose(centerPose, bx, by, bz, 0, 0, 1, boxThetaDeg),
 			infeed.dims.X, infeed.dims.Y, infeed.dims.Z,
-			pickStationInfeedBoxColor, opts,
+			infeed.color, opts,
 		))
 	}
 
