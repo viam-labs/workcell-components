@@ -194,8 +194,11 @@ type pickStation struct {
 	cfg                      PickStationConfig
 
 	// infeed is the paired box-detect sensor, nil when the config
-	// names none (or names one the machine does not have).
+	// names none.
 	infeed sensor.Sensor
+	// infeedReadFailing tracks read health so failures log once per
+	// outage rather than once per scene tick.
+	infeedReadFailing bool
 }
 
 func newPickStation(
@@ -238,13 +241,15 @@ func newPickStation(
 
 	var infeed sensor.Sensor
 	if cfg.InfeedBoxDetect != "" {
-		if snsr, err := sensor.FromDependencies(deps, cfg.InfeedBoxDetect); err == nil {
-			infeed = snsr
-		} else {
-			logger.Warnw(
-				"infeed_box_detect names a sensor this machine does not have; infeed box not rendered",
-				"sensor", cfg.InfeedBoxDetect, "error", err)
+		snsr, err := sensor.FromDependencies(deps, cfg.InfeedBoxDetect)
+		if err != nil {
+			// Unreachable in practice: Validate declares the sensor as
+			// a required dependency, so the graph withholds this
+			// constructor until it exists. Fail loudly if it happens.
+			return nil, fmt.Errorf(
+				"infeed_box_detect %q: %w", cfg.InfeedBoxDetect, err)
 		}
+		infeed = snsr
 	}
 
 	return &pickStation{
@@ -335,6 +340,14 @@ func (p *pickStation) Name() resource.Name { return p.name }
 // "…live until reconfigure…"}` so callers see that in-memory edits
 // revert on next config reload.
 func (p *pickStation) DoCommand(ctx context.Context, cmd map[string]interface{}) (map[string]interface{}, error) {
+	// The infeed sensor read round-trips through viam-server; do it
+	// before taking the component lock so a slow sensor cannot stall
+	// pose queries.
+	var infeed *infeedBoxState
+	if _, ok := cmd["get_visuals"]; ok {
+		infeed = p.infeedState(ctx)
+	}
+
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -391,7 +404,7 @@ func (p *pickStation) DoCommand(ctx context.Context, cmd map[string]interface{})
 			p.cfg.BoxOriginOffsetMM,
 			p.cfg.BoxThetaDeg,
 			p.cfg.RollerSpinPeriodS,
-			p.infeedState(ctx),
+			infeed,
 		)
 		out, err := visualsToMaps(entries)
 		if err != nil {
@@ -433,6 +446,70 @@ func (p *pickStation) effectiveConveyorDirection() Vec3D {
 }
 
 // statusMap returns the runtime health snapshot. Caller must hold p.mu.
+// infeedState reads the paired box-detect sensor into the visual's
+// terms: is a box waiting, and how far along the bed is the next one.
+// Returns nil (no infeed box drawn) with no sensor, a failed read, or
+// readings that do not look like a box-detect's. Takes p.mu only long
+// enough to copy config; the sensor RPC runs unlocked and bounded.
+func (p *pickStation) infeedState(ctx context.Context) *infeedBoxState {
+	p.mu.Lock()
+	infeed := p.infeed
+	dims := Vec3D{
+		X: defaultInfeedBoxWidthMM,
+		Y: defaultInfeedBoxLengthMM,
+		Z: defaultInfeedBoxHeightMM,
+	}
+	if d := p.cfg.InfeedBoxDimsMM; d != nil && d.X > 0 && d.Y > 0 && d.Z > 0 {
+		dims = *d
+	}
+	color := pickStationInfeedBoxColor
+	if c := p.cfg.InfeedBoxColor; c != nil {
+		color = *c
+	}
+	p.mu.Unlock()
+
+	if infeed == nil {
+		return nil
+	}
+	rctx, cancel := context.WithTimeout(ctx, sensorReadTimeout)
+	defer cancel()
+	rd, err := infeed.Readings(rctx, nil)
+	if err != nil {
+		p.noteInfeedRead(false, err)
+		return nil
+	}
+	present, ok := rd["box_present"].(bool)
+	if !ok {
+		p.noteInfeedRead(false, errNotABoxDetect)
+		return nil
+	}
+	p.noteInfeedRead(true, nil)
+	st := &infeedBoxState{present: present, dims: dims, color: color}
+	remaining := asFloat(rd["seconds_until_next"])
+	interval := asFloat(rd["interval_seconds"])
+	if !st.present && interval > 0 {
+		st.fraction = 1 - remaining/interval
+	}
+	return st
+}
+
+// noteInfeedRead logs infeed read failures on the ok-to-failing
+// transition only, so a wedged sensor does not flood at the scene's
+// poll rate. Caller must NOT hold p.mu.
+func (p *pickStation) noteInfeedRead(ok bool, err error) {
+	p.mu.Lock()
+	was := p.infeedReadFailing
+	p.infeedReadFailing = !ok
+	p.mu.Unlock()
+	if !ok && !was {
+		p.logger.Warnw("infeed box-detect readings failed; "+
+			"infeed box not rendered until reads recover", "error", err)
+	}
+	if ok && was {
+		p.logger.Infow("infeed box-detect readings recovered")
+	}
+}
+
 func (p *pickStation) statusMap() map[string]interface{} {
 	visible := true
 	if p.cfg.Visible != nil {
@@ -618,45 +695,6 @@ func (p *pickStation) boxOffsetMap() map[string]interface{} {
 // frame.orientation); composing with the box offset and theta tilts
 // the gripper to follow the surface naturally, oriented along the
 // box's local axes.
-// infeedState reads the paired box-detect sensor into the visual's
-// terms: is a box waiting, and how far along the bed is the next one.
-// Returns nil (no infeed box drawn) with no sensor or a failed read.
-// Caller must hold p.mu; the sensor has its own lock.
-func (p *pickStation) infeedState(ctx context.Context) *infeedBoxState {
-	if p.infeed == nil {
-		return nil
-	}
-	rd, err := p.infeed.Readings(ctx, nil)
-	if err != nil {
-		p.logger.Warnw("infeed box-detect readings failed; infeed box not rendered",
-			"error", err)
-		return nil
-	}
-	st := &infeedBoxState{
-		dims: Vec3D{
-			X: defaultInfeedBoxWidthMM,
-			Y: defaultInfeedBoxLengthMM,
-			Z: defaultInfeedBoxHeightMM,
-		},
-		color: pickStationInfeedBoxColor,
-	}
-	if d := p.cfg.InfeedBoxDimsMM; d != nil && d.X > 0 && d.Y > 0 && d.Z > 0 {
-		st.dims = *d
-	}
-	if c := p.cfg.InfeedBoxColor; c != nil {
-		st.color = *c
-	}
-	if v, ok := rd["box_present"].(bool); ok {
-		st.present = v
-	}
-	remaining := asFloat(rd["seconds_until_next"])
-	interval := asFloat(rd["interval_seconds"])
-	if !st.present && interval > 0 {
-		st.fraction = 1 - remaining/interval
-	}
-	return st
-}
-
 // Caller must hold p.mu.
 func (p *pickStation) pickupPose() spatialmath.Pose {
 	v := p.cfg.BoxOriginOffsetMM

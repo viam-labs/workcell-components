@@ -168,9 +168,12 @@ type pallet struct {
 
 	// dock is the paired tray-dock sensor, nil when the config names
 	// none.
-	dock  sensor.Sensor
-	color Color
-	cfg   PalletConfig
+	dock sensor.Sensor
+	// dockReadFailing tracks read health so failures log once per
+	// outage rather than once per scene tick.
+	dockReadFailing bool
+	color           Color
+	cfg             PalletConfig
 }
 
 func newPallet(
@@ -195,13 +198,14 @@ func newPallet(
 
 	var dock sensor.Sensor
 	if cfg.TrayDock != "" {
-		if snsr, err := sensor.FromDependencies(deps, cfg.TrayDock); err == nil {
-			dock = snsr
-		} else {
-			logger.Warnw(
-				"tray_dock names a sensor this machine does not have; tray exchange not rendered",
-				"sensor", cfg.TrayDock, "error", err)
+		snsr, err := sensor.FromDependencies(deps, cfg.TrayDock)
+		if err != nil {
+			// Unreachable in practice: Validate declares the sensor as
+			// a required dependency, so the graph withholds this
+			// constructor until it exists. Fail loudly if it happens.
+			return nil, fmt.Errorf("tray_dock %q: %w", cfg.TrayDock, err)
 		}
+		dock = snsr
 	}
 
 	return &pallet{
@@ -301,42 +305,15 @@ func (p *pallet) Name() resource.Name { return p.name }
 // supported. Their responses include `{"persisted": false, "hint":
 // "…"}` so callers see that live mutation does NOT survive a
 // reconfigure (the cell config wins on next reload).
-// exchangeState reads the paired tray-dock sensor into the visual's
-// terms: is a tray docked, and how far along is the exchange. Returns
-// nil (normal pallet) with no dock or a failed read.
-// Caller must hold p.mu; the sensor has its own lock.
-func (p *pallet) exchangeState(ctx context.Context) *trayExchangeState {
-	if p.dock == nil {
-		return nil
-	}
-	rd, err := p.dock.Readings(ctx, nil)
-	if err != nil {
-		p.logger.Warnw("tray-dock readings failed; tray exchange not rendered",
-			"error", err)
-		return nil
-	}
-	st := &trayExchangeState{
-		travelMM:     1200,
-		loadHeightMM: 200,
-	}
-	if p.cfg.ExchangeTravelMM > 0 {
-		st.travelMM = p.cfg.ExchangeTravelMM
-	}
-	if h := p.cfg.ExchangeLoadHeightMM; h != nil {
-		st.loadHeightMM = *h
-	}
-	if v, ok := rd["tray_present"].(bool); ok {
-		st.present = v
-	}
-	remaining := asFloat(rd["seconds_until_docked"])
-	exchange := asFloat(rd["exchange_seconds"])
-	if !st.present && exchange > 0 {
-		st.fraction = 1 - remaining/exchange
-	}
-	return st
-}
-
 func (p *pallet) DoCommand(ctx context.Context, cmd map[string]interface{}) (map[string]interface{}, error) {
+	// The dock sensor read round-trips through viam-server; do it
+	// before taking the component lock so a slow sensor cannot stall
+	// pose queries.
+	var exchange *trayExchangeState
+	if _, ok := cmd["get_visuals"]; ok {
+		exchange = p.exchangeState(ctx)
+	}
+
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -364,7 +341,7 @@ func (p *pallet) DoCommand(ctx context.Context, cmd map[string]interface{}) (map
 			p.name.Name,
 			p.pose, p.width, p.length, p.thickness,
 			p.color, p.cfg.Style, p.cfg.VisualOptions,
-			p.exchangeState(ctx),
+			exchange,
 		)
 		out, err := visualsToMaps(entries)
 		if err != nil {
@@ -561,6 +538,69 @@ func (p *pallet) setAttributes(v interface{}) (map[string]interface{}, error) {
 	applyVisualOptions(&p.cfg.VisualOptions, m)
 	p.logger.Infow("pallet attributes updated via DoCommand")
 	return p.attributesMap(), nil
+}
+
+// exchangeState reads the paired tray-dock sensor into the visual's
+// terms: is a tray docked, and how far along is the exchange. Returns
+// nil (normal pallet) with no dock, a failed read, or readings that do
+// not look like a tray-dock's. Takes p.mu only long enough to copy
+// config; the sensor RPC runs unlocked and bounded.
+func (p *pallet) exchangeState(ctx context.Context) *trayExchangeState {
+	p.mu.Lock()
+	dock := p.dock
+	travel := defaultExchangeTravelMM
+	if p.cfg.ExchangeTravelMM > 0 {
+		travel = p.cfg.ExchangeTravelMM
+	}
+	load := defaultExchangeLoadHeightMM
+	if h := p.cfg.ExchangeLoadHeightMM; h != nil {
+		load = *h
+	}
+	p.mu.Unlock()
+
+	if dock == nil {
+		return nil
+	}
+	rctx, cancel := context.WithTimeout(ctx, sensorReadTimeout)
+	defer cancel()
+	rd, err := dock.Readings(rctx, nil)
+	if err != nil {
+		p.noteDockRead(false, err)
+		return nil
+	}
+	present, ok := rd["tray_present"].(bool)
+	if !ok {
+		p.noteDockRead(false, errNotATrayDock)
+		return nil
+	}
+	p.noteDockRead(true, nil)
+	st := &trayExchangeState{
+		present:      present,
+		travelMM:     travel,
+		loadHeightMM: load,
+	}
+	remaining := asFloat(rd["seconds_until_docked"])
+	exchange := asFloat(rd["exchange_seconds"])
+	if !st.present && exchange > 0 {
+		st.fraction = 1 - remaining/exchange
+	}
+	return st
+}
+
+// noteDockRead logs dock read failures on the ok-to-failing transition
+// only. Caller must NOT hold p.mu.
+func (p *pallet) noteDockRead(ok bool, err error) {
+	p.mu.Lock()
+	was := p.dockReadFailing
+	p.dockReadFailing = !ok
+	p.mu.Unlock()
+	if !ok && !was {
+		p.logger.Warnw("tray-dock readings failed; tray exchange not "+
+			"rendered until reads recover", "error", err)
+	}
+	if ok && was {
+		p.logger.Infow("tray-dock readings recovered")
+	}
 }
 
 func (p *pallet) dimsMap() map[string]interface{} {

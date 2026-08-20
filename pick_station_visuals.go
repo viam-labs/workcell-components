@@ -33,7 +33,7 @@ var (
 	pickStationTargetColor = Color{R: 60, G: 220, B: 120, A: 0.35}
 	// Matches the pack-sequencer's placed-box color exactly, so the
 	// box the arm lifts looks like the box that arrived.
-	pickStationInfeedBoxColor = Color{R: 176, G: 136, B: 80, A: 1}
+	pickStationInfeedBoxColor = cardboardColor
 )
 
 // Default infeed-box dims: a hair under the course's 200x150x100 box
@@ -230,10 +230,16 @@ func pickStationVisuals(
 	// Infeed box — driven by the paired box-detect sensor. While the
 	// sensor counts down, the box travels the bed toward the pickup
 	// point; while box_present, it waits there.
-	if infeed != nil && boxOriginOffset != nil {
-		px := boxOriginOffset.X - width/2
-		py := boxOriginOffset.Y - length/2
-		bz := boxOriginOffset.Z + thickness/2 + infeed.dims.Z/2
+	if infeed != nil {
+		// A nil offset means the pickup sits at the corner origin,
+		// same convention as pickupPose; the infeed box still renders.
+		off := boxOriginOffset
+		if off == nil {
+			off = &Vec3D{}
+		}
+		px := off.X - width/2
+		py := off.Y - length/2
+		bz := off.Z + thickness/2 + infeed.dims.Z/2
 		nx, ny, _ := normalizeDir(conveyorDir)
 		// Entry point: walk backward from the pickup along the
 		// conveyor direction to the bed's upstream edge (dominant
@@ -256,7 +262,7 @@ func pickStationVisuals(
 		}
 		bx, by := px, py
 		if !infeed.present {
-			f := math.Max(0, math.Min(1, infeed.fraction))
+			f := clamp01(infeed.fraction)
 			bx = ex + (px-ex)*f
 			by = ey + (py-ey)*f
 		}

@@ -157,20 +157,3 @@ func (b *boxDetect) DoCommand(
 		return nil, fmt.Errorf("box-detect: unknown command %v", cmd)
 	}
 }
-
-// isTruthy reads a DoCommand flag that may arrive as a bool, a number, or a
-// string depending on how the caller's SDK encoded it.
-func isTruthy(v interface{}) bool {
-	switch t := v.(type) {
-	case bool:
-		return t
-	case float64:
-		return t != 0
-	case int:
-		return t != 0
-	case string:
-		return t == "true" || t == "True" || t == "1"
-	default:
-		return false
-	}
-}

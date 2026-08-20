@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 
 	"go.viam.com/rdk/components/sensor"
 	"go.viam.com/rdk/logging"
@@ -43,6 +44,11 @@ func (c *PalletEmptyConfig) Validate(_ string) ([]string, []string, error) {
 	return []string{worldstatestore.Named(c.storeName()).String()}, nil, nil
 }
 
+// errNoProgressShape: every progress verb either errored or answered
+// without a recognizable progress field.
+var errNoProgressShape = errors.New(
+	"store answered no progress verb with placed_count or placed")
+
 func (c *PalletEmptyConfig) storeName() string {
 	if name := strings.TrimSpace(c.WorldStateStore); name != "" {
 		return name
@@ -68,6 +74,11 @@ type palletEmpty struct {
 
 	logger logging.Logger
 	store  worldstatestore.Service
+	// workingVerb caches which progress verb this store answers, so
+	// newer stores do not pay a failed RPC on every reading.
+	workingVerb atomic.Value
+	// storeNameForErrors is the configured store name, for messages.
+	storeNameForErrors string
 }
 
 func newPalletEmpty(
@@ -88,9 +99,10 @@ func newPalletEmpty(
 	}
 
 	return &palletEmpty{
-		Named:  conf.ResourceName().AsNamed(),
-		logger: logger,
-		store:  store,
+		Named:              conf.ResourceName().AsNamed(),
+		logger:             logger,
+		store:              store,
+		storeNameForErrors: cfg.storeName(),
 	}, nil
 }
 
@@ -105,13 +117,33 @@ func (p *palletEmpty) Readings(
 ) (map[string]interface{}, error) {
 	var status map[string]interface{}
 	var err error
-	for _, verb := range progressVerbs {
+	verbs := progressVerbs
+	if known := p.workingVerb.Load(); known != nil {
+		verbs = []string{known.(string)}
+	}
+	found := false
+	for _, verb := range verbs {
 		status, err = p.store.DoCommand(ctx, map[string]interface{}{verb: true})
-		if err == nil {
+		if err != nil {
+			continue
+		}
+		// Some stores answer unknown verbs with an empty map and no
+		// error; require a recognizable progress shape before trusting
+		// the answer, or an empty reply reads as an empty pallet.
+		if _, ok := status["placed_count"]; ok {
+			found = true
+		} else if _, ok := status["placed"]; ok {
+			found = true
+		}
+		if found {
+			p.workingVerb.Store(verb)
 			break
 		}
 	}
-	if err != nil {
+	if !found {
+		if err == nil {
+			err = errNoProgressShape
+		}
 		// A store that is up but erroring is otherwise invisible on the card.
 		p.logger.Warnw("pallet-empty: no progress verb answered",
 			"tried", progressVerbs, "error", err)
@@ -139,5 +171,5 @@ func (p *palletEmpty) DoCommand(
 	// The reading is derived from the sequencer, so there is nothing here to
 	// set. Clearing the pallet is the sequencer's job (reset_progress).
 	return nil, fmt.Errorf("pallet-empty: no commands, it reads %s: %v",
-		defaultWorldStateStoreName, cmd)
+		p.storeNameForErrors, cmd)
 }

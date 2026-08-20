@@ -53,6 +53,21 @@ var palletBottomBoardColor = Color{R: 178, G: 138, B: 87, A: 1}
 // Plastic-style fallback color (slate grey).
 var palletPlasticColor = Color{R: 80, G: 90, B: 100, A: 1}
 
+// Default tray-exchange animation values; see PalletConfig.
+const (
+	defaultExchangeTravelMM     = 1200.0
+	defaultExchangeLoadHeightMM = 200.0
+)
+
+// trayExchangeState is what the paired tray-dock sensor said, reduced
+// to the visual's terms.
+type trayExchangeState struct {
+	present      bool    // a tray is docked
+	fraction     float64 // 0..1 progress of the exchange
+	travelMM     float64 // how far the tray travels off the dock
+	loadHeightMM float64 // load silhouette on the outbound tray
+}
+
 // palletVisuals returns the typed visual primitives that make up one
 // pallet at the given world pose, dims, color, and visual options.
 //
@@ -64,15 +79,6 @@ var palletPlasticColor = Color{R: 80, G: 90, B: 100, A: 1}
 // When opts.Visible is explicitly false, returns just the (invisible)
 // anchor frame — the component keeps a presence in the WSS state
 // while all geometry is hidden.
-// trayExchangeState is what the paired tray-dock sensor said, reduced
-// to the visual's terms.
-type trayExchangeState struct {
-	present      bool    // a tray is docked
-	fraction     float64 // 0..1 progress of the exchange
-	travelMM     float64 // how far the tray travels off the dock
-	loadHeightMM float64 // load silhouette on the outbound tray
-}
-
 func palletVisuals(
 	name string,
 	pose spatialmath.Pose,
@@ -93,13 +99,7 @@ func palletVisuals(
 	// targets) never moves.
 	var exchangeLoad float64
 	if exchange != nil && !exchange.present {
-		f := exchange.fraction
-		if f < 0 {
-			f = 0
-		}
-		if f > 1 {
-			f = 1
-		}
+		f := clamp01(exchange.fraction)
 		var offsetY float64
 		if f < 0.5 {
 			offsetY = exchange.travelMM * (f * 2)
@@ -134,7 +134,7 @@ func palletVisuals(
 			fmt.Sprintf("%s/outbound-load", name),
 			compose(pose, 0, 0, thickness/2+exchangeLoad/2, 0, 0, 1, 0),
 			width*0.92, length*0.92, exchangeLoad,
-			Color{R: 176, G: 136, B: 80, A: 1}, opts,
+			cardboardColor, opts,
 		))
 	}
 
