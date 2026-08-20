@@ -34,12 +34,12 @@ const (
 	// real pallet; trays adapt the count down to keep the look
 	// believable. Floors / ceilings on count prevent pathological
 	// extremes.
-	palletDesiredSlatWidthMM     = 175.0
-	palletMinSlatCount           = 2
-	palletMaxSlatCount           = 11
-	palletDesiredBottomBoardWMM  = 280.0 // bottom deck has fewer, wider boards
-	palletMinBottomBoardCount    = 2
-	palletMaxBottomBoardCount    = 7
+	palletDesiredSlatWidthMM    = 175.0
+	palletMinSlatCount          = 2
+	palletMaxSlatCount          = 11
+	palletDesiredBottomBoardWMM = 280.0 // bottom deck has fewer, wider boards
+	palletMinBottomBoardCount   = 2
+	palletMaxBottomBoardCount   = 7
 )
 
 // Darker brown for stringers / blocks — contrasts with the wood-tan
@@ -64,6 +64,15 @@ var palletPlasticColor = Color{R: 80, G: 90, B: 100, A: 1}
 // When opts.Visible is explicitly false, returns just the (invisible)
 // anchor frame — the component keeps a presence in the WSS state
 // while all geometry is hidden.
+// trayExchangeState is what the paired tray-dock sensor said, reduced
+// to the visual's terms.
+type trayExchangeState struct {
+	present      bool    // a tray is docked
+	fraction     float64 // 0..1 progress of the exchange
+	travelMM     float64 // how far the tray travels off the dock
+	loadHeightMM float64 // load silhouette on the outbound tray
+}
+
 func palletVisuals(
 	name string,
 	pose spatialmath.Pose,
@@ -71,10 +80,37 @@ func palletVisuals(
 	topColor Color,
 	style string,
 	opts VisualOptions,
+	exchange *trayExchangeState,
 ) []visualWire {
 	if opts.Visible != nil && !*opts.Visible {
 		return groupUnderFrame(name, pose, false, nil)
 	}
+
+	// Tray exchange: while the dock reports no tray, the visual slides.
+	// First half of the exchange the full tray leaves along +Y with a
+	// load silhouette riding it; second half the empty replacement
+	// slides in from the same aisle. The dock pose itself (motion
+	// targets) never moves.
+	var exchangeLoad float64
+	if exchange != nil && !exchange.present {
+		f := exchange.fraction
+		if f < 0 {
+			f = 0
+		}
+		if f > 1 {
+			f = 1
+		}
+		var offsetY float64
+		if f < 0.5 {
+			offsetY = exchange.travelMM * (f * 2)
+			exchangeLoad = exchange.loadHeightMM
+		} else {
+			offsetY = exchange.travelMM * (2 - f*2)
+		}
+		pose = spatialmath.Compose(pose,
+			spatialmath.NewPoseFromPoint(r3.Vector{Y: offsetY}))
+	}
+
 	style = normalizePalletStyle(style)
 
 	var children []visualWire
@@ -91,6 +127,17 @@ func palletVisuals(
 		}
 		children = append(children, palletBottomDeckBoards(name, pose, width, length, thickness, palletBottomBoardColor, opts)...)
 	}
+	// Load silhouette on the outbound tray: one tan block the size of
+	// the deck footprint, so a dispatched tray reads as full.
+	if exchangeLoad > 0 {
+		children = append(children, boxAt(
+			fmt.Sprintf("%s/outbound-load", name),
+			compose(pose, 0, 0, thickness/2+exchangeLoad/2, 0, 0, 1, 0),
+			width*0.92, length*0.92, exchangeLoad,
+			Color{R: 176, G: 136, B: 80, A: 1}, opts,
+		))
+	}
+
 	return groupUnderFrame(name, pose, opts.ShowAxes, children)
 }
 

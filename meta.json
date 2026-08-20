@@ -78,6 +78,11 @@
       "api": "rdk:component:sensor",
       "model": "viam:workcell-components:pallet-empty",
       "description": "Pallet occupancy, derived from the pack sequencer's own progress (world_state_store, default pack-sequencer). Readings: pallet_empty, pallet_full, boxes_on_pallet, capacity. Requires the placer to report placements to the sequencer."
+    },
+    {
+      "api": "rdk:component:sensor",
+      "model": "viam:workcell-components:tray-dock",
+      "description": "Presence sensor over the outbound tray dock. Readings: tray_present, seconds_until_docked, exchange_seconds. DoCommand {\"dispatch\": true} sends the full tray out and docks an empty one after the exchange."
     }
   ],
   "applications": [
