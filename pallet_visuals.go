@@ -87,9 +87,19 @@ func palletVisuals(
 	style string,
 	opts VisualOptions,
 	exchange *trayExchangeState,
+	hasDock bool,
+	bedTravelMM float64,
 ) []visualWire {
 	if opts.Visible != nil && !*opts.Visible {
 		return groupUnderFrame(name, pose, false, nil)
+	}
+
+	// The outfeed conveyor is fixed: the pallet rides it, so it is
+	// placed from the dock pose before any exchange offset.
+	var bed []visualWire
+	if hasDock {
+		bed = outfeedBedVisuals(name, pose, width, length, thickness,
+			bedTravelMM, opts)
 	}
 
 	// Tray exchange: while the dock reports no tray, the visual slides.
@@ -137,6 +147,7 @@ func palletVisuals(
 			cardboardColor, opts,
 		))
 	}
+	children = append(children, bed...)
 
 	return groupUnderFrame(name, pose, opts.ShowAxes, children)
 }
@@ -385,6 +396,77 @@ func slatGapForCount(totalWidth, slatWidth float64, count int) float64 {
 // boxAt builds a wire-format Box entry at the given absolute world
 // pose. opts.Opacity multiplies the color's intrinsic opacity to give
 // operators a single "fade" knob.
+// outfeedBedVisuals draws the pallet's own conveyor: a fixed roller
+// bed reaching from under the dock out through the cell's open side,
+// so a dispatched pallet visibly rides out and the empty one rides in.
+// The rollers' top sits at the pallet's bottom face; rails and legs
+// carry it to the floor.
+func outfeedBedVisuals(
+	name string,
+	dockPose spatialmath.Pose,
+	width, length, thickness, travelMM float64,
+	opts VisualOptions,
+) []visualWire {
+	if travelMM <= 0 {
+		travelMM = defaultExchangeTravelMM
+	}
+	bedLength := length + travelMM
+	bedWidth := width + 60
+	// Bed frame center: halfway along the travel, so the bed spans the
+	// dock and the exit run. Z places the roller tops at the pallet's
+	// bottom face.
+	palletBottom := -thickness / 2
+	railH := 60.0
+	rollerRadius := 16.0
+	deckZ := palletBottom - rollerRadius - 10
+	center := compose(dockPose, 0, travelMM/2, 0, 0, 0, 1, 0)
+
+	var out []visualWire
+	// Two side rails along the run.
+	for i, sx := range []float64{-1, 1} {
+		out = append(out, boxAt(
+			fmt.Sprintf("%s/outfeed-rail-%d", name, i),
+			compose(center, sx*(bedWidth/2-15), 0,
+				palletBottom-railH/2+8, 0, 0, 1, 0),
+			30, bedLength, railH, pickStationRailColor, opts,
+		))
+	}
+	// Rollers across the run.
+	count := adaptiveRollerCount(bedLength - 60)
+	step := 0.0
+	if count > 1 {
+		step = (bedLength - 60) / float64(count-1)
+	}
+	for i := 0; i < count; i++ {
+		localY := -bedLength/2 + 30 + float64(i)*step
+		out = append(out, capsuleAt(
+			fmt.Sprintf("%s/outfeed-roller-%02d", name, i),
+			compose(center, 0, localY, palletBottom-rollerRadius, 1, 0, 0, 0),
+			rollerRadius, bedWidth-70,
+			pickStationRollerColor, opts,
+		))
+	}
+	// Legs at the corners, floor to deck.
+	legTop := deckZ
+	legH := 0.0
+	// dockPose Z is the pallet centroid height above the floor; the leg
+	// spans from the floor to just under the deck. Recover the height
+	// from the pose itself.
+	legH = dockPose.Point().Z + legTop
+	if legH > 20 {
+		for i, c := range [][2]float64{{-1, -1}, {1, -1}, {-1, 1}, {1, 1}} {
+			out = append(out, boxAt(
+				fmt.Sprintf("%s/outfeed-leg-%d", name, i),
+				compose(center, c[0]*(bedWidth/2-30),
+					c[1]*(bedLength/2-40),
+					legTop-legH/2, 0, 0, 1, 0),
+				36, 36, legH, pickStationLegColor, opts,
+			))
+		}
+	}
+	return out
+}
+
 func boxAt(
 	label string,
 	pose spatialmath.Pose,

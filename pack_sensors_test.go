@@ -186,10 +186,37 @@ func TestInfeedBoxNilOffsetStillRenders(t *testing.T) {
 }
 
 func palletEntries(ex *trayExchangeState) []visualWire {
-	pose := spatialmath.NewPoseFromPoint(r3.Vector{X: 200, Y: 500, Z: 50})
+	pose := spatialmath.NewPoseFromPoint(r3.Vector{X: 200, Y: 500, Z: 200})
 	return palletVisuals("pallet", pose, 500, 350, 100,
 		Color{R: 180, G: 140, B: 90, A: 1}, "stringer",
-		VisualOptions{}, ex)
+		VisualOptions{}, ex, ex != nil, 1200)
+}
+
+// A docked pallet renders its own outfeed conveyor; an unpaired one
+// renders no bed at all. The bed never moves during an exchange.
+func TestOutfeedBed(t *testing.T) {
+	entries := palletEntries(nil)
+	if findChild(t, entries, "pallet/outfeed-roller-00") != nil {
+		t.Fatal("unpaired pallet must not render an outfeed bed")
+	}
+	still := palletEntries(&trayExchangeState{present: true, travelMM: 1200})
+	if findChild(t, still, "pallet/outfeed-roller-00") == nil {
+		t.Fatal("docked pallet must render the outfeed bed")
+	}
+	// The bed must hold still in WORLD space while the group root
+	// carries the exchange offset: root Y + child Y stays constant.
+	worldY := func(entries []visualWire, child string) float64 {
+		root := findChild(t, entries, "pallet/group")
+		c := findChild(t, entries, child)
+		return root.Pose.Y + c.Pose.Y
+	}
+	mid := palletEntries(&trayExchangeState{
+		present: false, fraction: 0.25, travelMM: 1200})
+	a := worldY(still, "pallet/outfeed-roller-00")
+	b := worldY(mid, "pallet/outfeed-roller-00")
+	if a != b {
+		t.Fatalf("the bed moved during the exchange: %v vs %v", a, b)
+	}
 }
 
 func TestTrayExchangePhases(t *testing.T) {

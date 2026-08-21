@@ -337,11 +337,17 @@ func (p *pallet) DoCommand(ctx context.Context, cmd map[string]interface{}) (map
 		return p.attributesMap(), nil
 	}
 	if _, ok := cmd["get_visuals"]; ok {
+		travel := p.cfg.ExchangeTravelMM
+		if travel <= 0 {
+			travel = defaultExchangeTravelMM
+		}
 		entries := palletVisuals(
 			p.name.Name,
 			p.pose, p.width, p.length, p.thickness,
 			p.color, p.cfg.Style, p.cfg.VisualOptions,
 			exchange,
+			p.cfg.TrayDock != "",
+			travel,
 		)
 		out, err := visualsToMaps(entries)
 		if err != nil {
