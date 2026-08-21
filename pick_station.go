@@ -509,6 +509,12 @@ func (p *pickStation) infeedState(ctx context.Context) *infeedBoxState {
 		return nil
 	}
 	p.noteInfeedRead(true, nil)
+	// A disabled infeed renders nothing at all: no waiting box, no
+	// traveling ghost. Sensors that predate the flag report no
+	// "enabled" key and stay always-on.
+	if enabled, ok := rd["enabled"].(bool); ok && !enabled {
+		return nil
+	}
 	st := &infeedBoxState{present: present, dims: dims, color: color}
 	remaining := asFloat(rd["seconds_until_next"])
 	interval := asFloat(rd["interval_seconds"])

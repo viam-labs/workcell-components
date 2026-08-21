@@ -40,8 +40,22 @@ func newTestBoxDetect(t *testing.T, cfg *BoxDetectConfig) *boxDetect {
 	return res.(*boxDetect)
 }
 
-func TestBoxDetectLifecycle(t *testing.T) {
+func TestBoxDetectDisabledByDefault(t *testing.T) {
 	b := newTestBoxDetect(t, &BoxDetectConfig{IntervalSeconds: 60})
+	rd, _ := b.Readings(context.Background(), nil)
+	if rd["enabled"] != false || rd["box_present"] != false {
+		t.Fatalf("disabled infeed must report enabled:false, "+
+			"box_present:false; got %v", rd)
+	}
+	out, _ := b.DoCommand(context.Background(),
+		map[string]interface{}{"take": true})
+	if out["taken"] != false {
+		t.Fatalf("take on a disabled infeed must refuse: %v", out)
+	}
+}
+
+func TestBoxDetectLifecycle(t *testing.T) {
+	b := newTestBoxDetect(t, &BoxDetectConfig{IntervalSeconds: 60, Enabled: true})
 	rd, _ := b.Readings(context.Background(), nil)
 	if rd["box_present"] != true {
 		t.Fatal("expected a box waiting at start")
@@ -75,7 +89,7 @@ func TestBoxDetectLifecycle(t *testing.T) {
 
 func TestBoxDetectStartEmpty(t *testing.T) {
 	b := newTestBoxDetect(t, &BoxDetectConfig{
-		IntervalSeconds: 60, StartEmpty: true})
+		IntervalSeconds: 60, StartEmpty: true, Enabled: true})
 	rd, _ := b.Readings(context.Background(), nil)
 	if rd["box_present"] != false {
 		t.Fatal("StartEmpty should begin with no box")
@@ -233,7 +247,7 @@ func TestPickStationTakeForwarding(t *testing.T) {
 	}
 
 	// Paired station consumes the sensor's waiting box.
-	b := newTestBoxDetect(t, &BoxDetectConfig{IntervalSeconds: 60})
+	b := newTestBoxDetect(t, &BoxDetectConfig{IntervalSeconds: 60, Enabled: true})
 	p = &pickStation{infeed: b}
 	out, err = p.DoCommand(context.Background(),
 		map[string]interface{}{"take": true})

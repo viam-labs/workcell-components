@@ -38,6 +38,12 @@ type BoxDetectConfig struct {
 	// StartEmpty presents no box until the first interval has elapsed.
 	// Default is to start with a box waiting.
 	StartEmpty bool `json:"start_empty,omitempty"`
+
+	// Enabled turns the infeed on. Disabled (the default), the sensor
+	// reports no box, take refuses, and the paired pick-station renders
+	// no infeed box: the conveyor stands still until someone flips
+	// this to true.
+	Enabled bool `json:"enabled,omitempty"`
 }
 
 func (c *BoxDetectConfig) Validate(_ string) ([]string, []string, error) {
@@ -67,6 +73,7 @@ type boxDetect struct {
 	logger logging.Logger
 
 	mu       sync.Mutex
+	enabled  bool
 	interval time.Duration
 	// readyAt is when the next box is presented. Zero means one is already
 	// waiting.
@@ -92,6 +99,7 @@ func newBoxDetect(
 	b := &boxDetect{
 		Named:    conf.ResourceName().AsNamed(),
 		logger:   logger,
+		enabled:  cfg.Enabled,
 		interval: time.Duration(interval * float64(time.Second)),
 	}
 	if cfg.StartEmpty {
@@ -103,6 +111,9 @@ func newBoxDetect(
 // present reports whether a box is waiting, and how long until one is.
 // Read-only; caller holds the lock.
 func (b *boxDetect) present() (bool, time.Duration) {
+	if !b.enabled {
+		return false, 0
+	}
 	if b.readyAt.IsZero() {
 		return true, 0
 	}
@@ -120,6 +131,7 @@ func (b *boxDetect) Readings(
 
 	here, remaining := b.present()
 	return map[string]interface{}{
+		"enabled":            b.enabled,
 		"box_present":        here,
 		"seconds_until_next": remaining.Seconds(),
 		"interval_seconds":   b.interval.Seconds(),
@@ -138,9 +150,13 @@ func (b *boxDetect) DoCommand(
 	case isTruthy(cmd["take"]):
 		here, _ := b.present()
 		if !here {
+			reason := "no box at the pick-station"
+			if !b.enabled {
+				reason = "infeed disabled: set enabled: true on box-detect"
+			}
 			return map[string]interface{}{
 				"taken": false,
-				"error": "no box at the pick-station",
+				"error": reason,
 			}, nil
 		}
 		b.readyAt = time.Now().Add(b.interval)
