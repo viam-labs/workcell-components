@@ -205,51 +205,53 @@ func TestOutfeedBed(t *testing.T) {
 	}
 	// The bed must hold still in WORLD space while the group root
 	// carries the exchange offset: root Y + child Y stays constant.
-	worldY := func(entries []visualWire, child string) float64 {
+	worldX := func(entries []visualWire, child string) float64 {
 		root := findChild(t, entries, "pallet/group")
 		c := findChild(t, entries, child)
-		return root.Pose.Y + c.Pose.Y
+		return root.Pose.X + c.Pose.X
 	}
 	mid := palletEntries(&trayExchangeState{
 		present: false, fraction: 0.25, travelMM: 1200})
-	a := worldY(still, "pallet/outfeed-roller-00")
-	b := worldY(mid, "pallet/outfeed-roller-00")
-	if a != b {
+	a := worldX(still, "pallet/outfeed-roller-00")
+	b := worldX(mid, "pallet/outfeed-roller-00")
+	if diff := a - b; diff > 1e-6 || diff < -1e-6 {
 		t.Fatalf("the bed moved during the exchange: %v vs %v", a, b)
 	}
 }
 
 func TestTrayExchangePhases(t *testing.T) {
-	anchorY := func(entries []visualWire) float64 {
+	anchorX := func(entries []visualWire) float64 {
 		g := findChild(t, entries, "pallet/group")
 		if g == nil || g.Pose == nil {
 			t.Fatal("no group anchor")
 		}
-		return g.Pose.Y
+		return g.Pose.X
 	}
 	docked := palletEntries(&trayExchangeState{
 		present: true, travelMM: 1200, loadHeightMM: 200})
-	if y := anchorY(docked); y != 500 {
-		t.Fatalf("docked tray at y=%v, want 500", y)
+	if x := anchorX(docked); x != 200 {
+		t.Fatalf("docked pallet at x=%v, want 200", x)
 	}
 	if findChild(t, docked, "pallet/outbound-load") != nil {
-		t.Fatal("docked tray must not wear the load silhouette")
+		t.Fatal("docked pallet must not wear the load silhouette")
 	}
+	// First half: the full pallet rides out to the RIGHT (+X).
 	quarter := palletEntries(&trayExchangeState{
 		present: false, fraction: 0.25, travelMM: 1200, loadHeightMM: 200})
-	if y := anchorY(quarter); y != 1100 {
-		t.Fatalf("outbound tray at y=%v, want 1100", y)
+	if x := anchorX(quarter); x != 800 {
+		t.Fatalf("outbound pallet at x=%v, want 800", x)
 	}
 	if findChild(t, quarter, "pallet/outbound-load") == nil {
-		t.Fatal("outbound tray should carry the load silhouette")
+		t.Fatal("outbound pallet should carry the load silhouette")
 	}
+	// Second half: the empty replacement rides in from the LEFT (-X).
 	threeQ := palletEntries(&trayExchangeState{
 		present: false, fraction: 0.75, travelMM: 1200, loadHeightMM: 200})
-	if y := anchorY(threeQ); y != 1100 {
-		t.Fatalf("inbound tray at y=%v, want 1100", y)
+	if x := anchorX(threeQ); x != -400 {
+		t.Fatalf("inbound pallet at x=%v, want -400", x)
 	}
 	if findChild(t, threeQ, "pallet/outbound-load") != nil {
-		t.Fatal("inbound empty tray must not carry a load")
+		t.Fatal("inbound empty pallet must not carry a load")
 	}
 }
 
