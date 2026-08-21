@@ -355,9 +355,9 @@ func (p *pickStation) DoCommand(ctx context.Context, cmd map[string]interface{})
 	// forward it before taking the lock, bounded like the reads.
 	if isTruthy(cmd["take"]) {
 		p.mu.Lock()
-		sensor := p.infeed
+		snsr := p.infeed
 		p.mu.Unlock()
-		if sensor == nil {
+		if snsr == nil {
 			return map[string]interface{}{
 				"taken": false,
 				"error": "no infeed_box_detect sensor paired",
@@ -365,7 +365,7 @@ func (p *pickStation) DoCommand(ctx context.Context, cmd map[string]interface{})
 		}
 		rctx, cancel := context.WithTimeout(ctx, sensorReadTimeout)
 		defer cancel()
-		resp, err := sensor.DoCommand(rctx, map[string]interface{}{"take": true})
+		resp, err := snsr.DoCommand(rctx, map[string]interface{}{"take": true})
 		if err != nil {
 			return nil, fmt.Errorf("take: forwarding to %q: %w",
 				p.cfg.InfeedBoxDetect, err)
