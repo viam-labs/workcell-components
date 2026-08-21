@@ -217,3 +217,34 @@ func TestSensorReadTimeoutIsBounded(t *testing.T) {
 		t.Fatal("sensor read timeout must stay small; it can hold up a tick")
 	}
 }
+
+// The station's take verb forwards to the paired box-detect, so a
+// module can empty the infeed without holding the sensor itself.
+func TestPickStationTakeForwarding(t *testing.T) {
+	// Unpaired station refuses politely instead of erroring.
+	p := &pickStation{}
+	out, err := p.DoCommand(context.Background(),
+		map[string]interface{}{"take": true})
+	if err != nil {
+		t.Fatalf("unpaired take errored: %v", err)
+	}
+	if out["taken"] != false {
+		t.Fatalf("unpaired take = %v, want taken:false", out)
+	}
+
+	// Paired station consumes the sensor's waiting box.
+	b := newTestBoxDetect(t, &BoxDetectConfig{IntervalSeconds: 60})
+	p = &pickStation{infeed: b}
+	out, err = p.DoCommand(context.Background(),
+		map[string]interface{}{"take": true})
+	if err != nil {
+		t.Fatalf("paired take errored: %v", err)
+	}
+	if out["taken"] != true {
+		t.Fatalf("paired take = %v, want taken:true", out)
+	}
+	rd, _ := b.Readings(context.Background(), nil)
+	if rd["box_present"] != false {
+		t.Fatal("sensor still reports a box after station take")
+	}
+}

@@ -321,6 +321,9 @@ func (p *pickStation) Name() resource.Name { return p.name }
 //	                                → world pose at box top center
 //	{"get_conveyor_direction": true}
 //	                                → {x, y, z} unit vector
+//	{"take": true}                 → consume the waiting infeed box
+//	                                  (forwards to the paired
+//	                                  infeed_box_detect sensor)
 //	{"get_attributes": true}       → batch read of everything
 //	{"get_status": true}           → {ok, name, model, dims_valid,
 //	                                  color_valid, visible, show_axes}
@@ -346,6 +349,28 @@ func (p *pickStation) DoCommand(ctx context.Context, cmd map[string]interface{})
 	var infeed *infeedBoxState
 	if _, ok := cmd["get_visuals"]; ok {
 		infeed = p.infeedState(ctx)
+	}
+
+	// take also round-trips through viam-server to the paired sensor;
+	// forward it before taking the lock, bounded like the reads.
+	if isTruthy(cmd["take"]) {
+		p.mu.Lock()
+		sensor := p.infeed
+		p.mu.Unlock()
+		if sensor == nil {
+			return map[string]interface{}{
+				"taken": false,
+				"error": "no infeed_box_detect sensor paired",
+			}, nil
+		}
+		rctx, cancel := context.WithTimeout(ctx, sensorReadTimeout)
+		defer cancel()
+		resp, err := sensor.DoCommand(rctx, map[string]interface{}{"take": true})
+		if err != nil {
+			return nil, fmt.Errorf("take: forwarding to %q: %w",
+				p.cfg.InfeedBoxDetect, err)
+		}
+		return resp, nil
 	}
 
 	p.mu.Lock()
