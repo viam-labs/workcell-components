@@ -112,6 +112,55 @@ func TestWireToVisualOptsStripsAnimation(t *testing.T) {
 	}
 }
 
+// Roller animation is opt-in: a period alone must NOT animate.
+func TestRollerAnimationIsOptIn(t *testing.T) {
+	var p pickStation
+	p.cfg.RollerSpinPeriodS = 2.0
+
+	if p.animateRollers() {
+		t.Error("animate_rollers must default to false")
+	}
+	if got := p.effectiveRollerSpinPeriodS(); got != 0 {
+		t.Errorf("period with animation off = %v, want 0 (static)", got)
+	}
+
+	on := true
+	p.cfg.AnimateRollers = &on
+	if !p.animateRollers() {
+		t.Error("animate_rollers=true must enable")
+	}
+	if got := p.effectiveRollerSpinPeriodS(); got != 2.0 {
+		t.Errorf("period with animation on = %v, want 2.0", got)
+	}
+
+	// The rate is preserved across the toggle -- it is a rate, not a switch.
+	off := false
+	p.cfg.AnimateRollers = &off
+	if p.cfg.RollerSpinPeriodS != 2.0 {
+		t.Error("toggling animation off must not clobber the configured period")
+	}
+}
+
+// With animation off, no entry may carry an animation spec even though the
+// rollers are still drawn.
+func TestNoAnimationSpecsWhenRollerAnimationOff(t *testing.T) {
+	// period 0 is what effectiveRollerSpinPeriodS returns when off
+	pose := spatialmath.NewPoseFromPoint(r3.Vector{X: 400, Y: -650, Z: 200})
+	entries := pickStationVisuals(
+		"pick-station", pose, 400, 1100, 40,
+		defaultPickStationColor, VisualOptions{}, 200,
+		Vec3D{X: 0, Y: 1, Z: 0}, nil, 0, 0, true, nil,
+	)
+	if rollerCount(entries) == 0 {
+		t.Fatal("rollers must still be drawn when animation is off")
+	}
+	for _, e := range entries {
+		if e.Animation != nil {
+			t.Fatalf("animation spec present with spin period 0: %s", e.Label)
+		}
+	}
+}
+
 // Defaults must preserve existing behaviour for configs that set neither.
 func TestAnimationDefaults(t *testing.T) {
 	var c WorkcellSceneConfig

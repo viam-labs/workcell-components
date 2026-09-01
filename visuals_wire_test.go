@@ -439,9 +439,29 @@ func TestPickStationGetVisuals_RollerSpinAnimation(t *testing.T) {
 		}
 	}
 
-	// Turn on spin.
-	_, err := p.DoCommand(context.Background(), map[string]interface{}{
+	// A period ALONE must not animate -- animation is opt-in as of the
+	// animate_rollers gate (spinning rollers were the entire world-state
+	// stream for motion nobody could see).
+	if _, err := p.DoCommand(context.Background(), map[string]interface{}{
 		"set_attributes": map[string]interface{}{"roller_spin_period_s": float64(2.0)},
+	}); err != nil {
+		t.Fatalf("set_attributes (period only): %v", err)
+	}
+	resp, _ = p.DoCommand(context.Background(), map[string]interface{}{"get_visuals": true})
+	entries, _ = resp["visuals"].([]map[string]interface{})
+	for _, e := range entries {
+		label, _ := e["label"].(string)
+		if !strings.Contains(label, "roller") {
+			continue
+		}
+		if _, ok := e["animation"]; ok {
+			t.Errorf("roller %q animated from period alone; animate_rollers is required", label)
+		}
+	}
+
+	// Turn on spin: period + the explicit gate.
+	_, err := p.DoCommand(context.Background(), map[string]interface{}{
+		"set_attributes": map[string]interface{}{"animate_rollers": true},
 	})
 	if err != nil {
 		t.Fatalf("set_attributes: %v", err)
