@@ -120,6 +120,14 @@ type PickStationConfig struct {
 	// conveyor is "live."
 	RollerSpinPeriodS float64 `json:"roller_spin_period_s,omitempty"`
 
+	// RenderRollers draws the roller bed. Unset = true (existing
+	// behaviour). Set false to omit the roller capsules: the deck and
+	// side rails still read as a conveyor, but ~17 animated objects
+	// leave the scene. On the Viam 102 workcell those rollers were the
+	// entire world-state stream — ~623 events/s and ~634 KB/s per
+	// viewer, continuously, for motion no one can actually see.
+	RenderRollers *bool `json:"render_rollers,omitempty"`
+
 	// InfeedBoxDetect names a box-detect sensor on the same machine.
 	// When set, the station renders an infeed box that travels down
 	// the bed in time with the sensor's countdown, and waits at the
@@ -429,6 +437,7 @@ func (p *pickStation) DoCommand(ctx context.Context, cmd map[string]interface{})
 			p.cfg.BoxOriginOffsetMM,
 			p.cfg.BoxThetaDeg,
 			p.cfg.RollerSpinPeriodS,
+			p.renderRollers(),
 			infeed,
 		)
 		out, err := visualsToMaps(entries)
@@ -664,9 +673,18 @@ func (p *pickStation) setAttributes(v interface{}) (map[string]interface{}, erro
 	if _, ok := m["roller_spin_period_s"]; ok {
 		p.cfg.RollerSpinPeriodS = asFloat(m["roller_spin_period_s"])
 	}
+	if v2, ok := m["render_rollers"].(bool); ok {
+		p.cfg.RenderRollers = &v2
+	}
 	applyVisualOptions(&p.cfg.VisualOptions, m)
 	p.logger.Infow("pick-station attributes updated via DoCommand")
 	return p.attributesMap(), nil
+}
+
+// renderRollers reports whether the roller bed should be drawn.
+// Unset defaults to true so existing configs are unaffected.
+func (p *pickStation) renderRollers() bool {
+	return p.cfg.RenderRollers == nil || *p.cfg.RenderRollers
 }
 
 func (p *pickStation) dimsMap() map[string]interface{} {
@@ -698,6 +716,7 @@ func (p *pickStation) attributesMap() map[string]interface{} {
 		"pick_home_z_offset_mm":  p.cfg.PickHomeZOffsetMM,
 		"conveyor_direction":     map[string]interface{}{"x": conv.X, "y": conv.Y, "z": conv.Z},
 		"roller_spin_period_s":   p.cfg.RollerSpinPeriodS,
+		"render_rollers":         p.renderRollers(),
 		"pose":                   poseToWorldMap(p.pose),
 		"pickup_pose":            poseToWorldMap(p.pickupPose()),
 		"summary":                p.summaryString(),
@@ -842,6 +861,7 @@ func pickStationSchema() []schemaEntry {
 
 		numEntry("roller_spin_period_s", "Roller spin period (0 = static)",
 			schemaGroupBehavior, "s", 0, 30, 0.1),
+		boolEntry("render_rollers", "Draw roller bed", schemaGroupVisual),
 
 		colorEntry("color", "Deck color", schemaGroupVisual),
 		boolEntry("visible", "Visible", schemaGroupVisual),

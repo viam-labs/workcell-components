@@ -40,7 +40,9 @@ import (
 //	  "component_names":    ["pallet", "pick-station", "fence-north", ...],
 //	  "pallet_names":       ["pallet"],         // deprecated alias
 //	  "pick_station_names": ["pick-station"],   // deprecated alias
-//	  "tick_interval_secs": 1.0
+//	  "tick_interval_secs": 1.0,
+//	  "animations_enabled": true,   // false = publish everything inert
+//	  "animation_tick_hz":  30.0    // animation dispatch rate
 //	}
 //
 // Components named here must be present in the cell config and must
@@ -53,6 +55,7 @@ const (
 	minSceneTickIntervalSecs     = 0.1 // clamp — don't hammer sibling DoCommand
 	defaultParentFrame           = "world"
 	defaultAnimationTickHz       = 30.0
+	minAnimationTickHz           = 0.1 // clamp — a 0 Hz tick loop never fires
 )
 
 // WorkcellSceneConfig is the persisted attribute shape.
@@ -70,6 +73,44 @@ type WorkcellSceneConfig struct {
 	// TickIntervalSecs is the poll interval for republishing.
 	// Defaults to 1.0; clamped to [0.1, ∞).
 	TickIntervalSecs float64 `json:"tick_interval_secs,omitempty"`
+
+	// AnimationsEnabled turns per-Visual Animation specs on or off for
+	// the whole scene. Unset = true (existing behaviour).
+	//
+	// When false, every visual is published inert: animation specs are
+	// dropped at decode time, so the library's tick loop has nothing to
+	// dispatch and the scene stops emitting per-tick transform changes.
+	// The object COUNT is unchanged — this isolates the cost of
+	// animation from the cost of scene size, which is exactly the A/B
+	// needed to attribute world-state stream traffic.
+	//
+	// Measured on the Viam 102 workcell: animation alone accounts for
+	// ~623 stream events/s and ~634 KB/s per viewer, continuously,
+	// whether or not the robot is moving.
+	AnimationsEnabled *bool `json:"animations_enabled,omitempty"`
+
+	// AnimationTickHz overrides the animation dispatch rate. Unset or
+	// <= 0 = 30 Hz. Lower it to trade animation smoothness for stream
+	// traffic without turning animation off entirely.
+	AnimationTickHz float64 `json:"animation_tick_hz,omitempty"`
+}
+
+// animationsEnabled reports whether animation specs should be honoured.
+// Unset defaults to true so existing configs are unaffected.
+func (c *WorkcellSceneConfig) animationsEnabled() bool {
+	return c.AnimationsEnabled == nil || *c.AnimationsEnabled
+}
+
+// animationTickHz is the dispatch rate for animation specs, defaulted
+// and floored so a bad config cannot stall or hammer the tick loop.
+func (c *WorkcellSceneConfig) animationTickHz() float64 {
+	if c.AnimationTickHz <= 0 {
+		return defaultAnimationTickHz
+	}
+	if c.AnimationTickHz < minAnimationTickHz {
+		return minAnimationTickHz
+	}
+	return c.AnimationTickHz
 }
 
 // allComponentNames returns the deduplicated union of ComponentNames
@@ -175,7 +216,7 @@ func newWorkcellScene(
 	}
 	s.SceneServiceBase.Logger = logger
 	s.SceneServiceBase.DefaultParentFrame = defaultParentFrame
-	s.SceneServiceBase.DefaultTickHz = defaultAnimationTickHz
+	s.SceneServiceBase.DefaultTickHz = cfg.animationTickHz()
 	s.SceneServiceBase.DefaultUUIDStrategy = "stable"
 	// Hooks = s so the library calls SceneTick on us; lets the library's
 	// animation tick loop drive Animation specs attached to component
@@ -203,7 +244,7 @@ func newWorkcellScene(
 	initialVisuals := s.collectInitialVisuals(ctx)
 	if err := s.SceneServiceBase.SetScene(
 		visuals.SetSceneOpts{
-			TickHz:       defaultAnimationTickHz,
+			TickHz:       cfg.animationTickHz(),
 			UUIDStrategy: "stable",
 			ParentFrame:  defaultParentFrame,
 		},
@@ -221,6 +262,8 @@ func newWorkcellScene(
 		"components", cfg.allComponentNames(),
 		"tick_interval_secs", tick,
 		"initial_visuals", len(initialVisuals),
+		"animations_enabled", cfg.animationsEnabled(),
+		"animation_tick_hz", cfg.animationTickHz(),
 	)
 	return s, nil
 }
@@ -399,7 +442,7 @@ func (s *workcellScene) pollAllComponents(ctx context.Context) []pollResult {
 		entries := coerceWireVisualsSlice(resp["visuals"])
 		vs := make([]visuals.Visual, 0, len(entries))
 		for i, m := range entries {
-			v, parseErr := wireToVisual(m)
+			v, parseErr := wireToVisualOpts(m, !s.cfg.animationsEnabled())
 			if parseErr != nil {
 				s.logger.Warnw("workcell-scene: wireToVisual failed",
 					"name", name, "index", i, "error", parseErr)
