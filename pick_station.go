@@ -91,6 +91,12 @@ type PickStationConfig struct {
 	// Positive = CCW viewed from above.
 	BoxThetaDeg float64 `json:"box_theta_deg,omitempty"`
 
+	// ShowNextBoxTarget draws a translucent marker cube at the grasp
+	// pose (an operator hint for where the palletizer reaches next).
+	// Off by default: with a box configured it reads as a spurious
+	// second box in the 3D scene. Opt in for operator/debug views.
+	ShowNextBoxTarget bool `json:"show_next_box_target,omitempty"`
+
 	// PickHomeZOffsetMM is the gripper's pre-grab waypoint above the
 	// top of the box. Z-only offset — XY same as the vacuum point.
 	PickHomeZOffsetMM float64 `json:"pick_home_z_offset_mm,omitempty"`
@@ -428,6 +434,7 @@ func (p *pickStation) DoCommand(ctx context.Context, cmd map[string]interface{})
 			conv,
 			p.cfg.BoxOriginOffsetMM,
 			p.cfg.BoxThetaDeg,
+			p.cfg.ShowNextBoxTarget,
 			p.cfg.RollerSpinPeriodS,
 			infeed,
 		)
