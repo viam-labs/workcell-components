@@ -75,6 +75,7 @@ func pickStationVisuals(
 	boxThetaDeg float64,
 	showNextBoxTarget bool,
 	rollerSpinPeriodS float64,
+	renderRollers bool,
 	infeed *infeedBoxState,
 ) []visualWire {
 	if opts.Visible != nil && !*opts.Visible {
@@ -133,6 +134,15 @@ func pickStationVisuals(
 			"mode":     "spin",
 			"period_s": rollerSpinPeriodS,
 		}
+	}
+	// renderRollers=false omits the roller capsules entirely. They are the
+	// single largest contributor to world-state traffic (~17 objects spinning
+	// at the animation tick rate), and they carry no information — the deck
+	// and rails still read as a conveyor without them. Skipping them removes
+	// both the per-tick animation events AND the objects themselves from
+	// ListUUIDs / GetTransform, which is a separate cost.
+	if !renderRollers {
+		count = 0
 	}
 	for i := 0; i < count; i++ {
 		localY := startY + float64(i)*rollerStep

@@ -119,12 +119,35 @@ type PickStationConfig struct {
 	// Defaults to {0, 1, 0} (boxes flow in world +Y) when unset.
 	ConveyorDirection *Vec3D `json:"conveyor_direction,omitempty"`
 
-	// RollerSpinPeriodS controls roller animation. When > 0, rollers
-	// spin around their long axis with this period (seconds per
-	// revolution). 0 / unset = static. Visual only; no motion-plan
-	// or palletizer effect. Useful for visual feedback that the
-	// conveyor is "live."
+	// RollerSpinPeriodS is the roller spin RATE (seconds per
+	// revolution) when roller animation is enabled. Visual only; no
+	// motion-plan or palletizer effect.
+	//
+	// Setting this alone no longer animates anything — see
+	// AnimateRollers. The rate and the on/off switch are separate so a
+	// cell can keep its tuned period while animation is off.
 	RollerSpinPeriodS float64 `json:"roller_spin_period_s,omitempty"`
+
+	// AnimateRollers turns roller spin on. Unset = FALSE: rollers are
+	// drawn but static.
+	//
+	// Off by default because spinning rollers are, by measurement, the
+	// entire world-state stream and buy nothing: ~629 events/s and
+	// ~634 KB/s per viewer with animation on versus ~6 events/s with it
+	// off, for motion that produced ZERO changing render slots over
+	// 20.5s at 60fps. A viewer cannot see it; every subscriber pays for
+	// it continuously, moving or idle.
+	//
+	// Set true to opt back in.
+	AnimateRollers *bool `json:"animate_rollers,omitempty"`
+
+	// RenderRollers draws the roller bed. Unset = true (existing
+	// behaviour). Set false to omit the roller capsules: the deck and
+	// side rails still read as a conveyor, but ~17 animated objects
+	// leave the scene. On the Viam 102 workcell those rollers were the
+	// entire world-state stream — ~623 events/s and ~634 KB/s per
+	// viewer, continuously, for motion no one can actually see.
+	RenderRollers *bool `json:"render_rollers,omitempty"`
 
 	// InfeedBoxDetect names a box-detect sensor on the same machine.
 	// When set, the station renders an infeed box that travels down
@@ -435,7 +458,8 @@ func (p *pickStation) DoCommand(ctx context.Context, cmd map[string]interface{})
 			p.cfg.BoxOriginOffsetMM,
 			p.cfg.BoxThetaDeg,
 			p.cfg.ShowNextBoxTarget,
-			p.cfg.RollerSpinPeriodS,
+			p.effectiveRollerSpinPeriodS(),
+			p.renderRollers(),
 			infeed,
 		)
 		out, err := visualsToMaps(entries)
@@ -671,9 +695,42 @@ func (p *pickStation) setAttributes(v interface{}) (map[string]interface{}, erro
 	if _, ok := m["roller_spin_period_s"]; ok {
 		p.cfg.RollerSpinPeriodS = asFloat(m["roller_spin_period_s"])
 	}
+	if v2, ok := m["render_rollers"].(bool); ok {
+		p.cfg.RenderRollers = &v2
+	}
+	if v2, ok := m["animate_rollers"].(bool); ok {
+		p.cfg.AnimateRollers = &v2
+	}
+	if v2, ok := m["show_next_box_target"].(bool); ok {
+		p.cfg.ShowNextBoxTarget = v2
+	}
 	applyVisualOptions(&p.cfg.VisualOptions, m)
 	p.logger.Infow("pick-station attributes updated via DoCommand")
 	return p.attributesMap(), nil
+}
+
+// animateRollers reports whether roller spin is enabled. Unset = false:
+// animation is opt-in, because it is pure world-state traffic for motion
+// nobody can see (see AnimateRollers).
+func (p *pickStation) animateRollers() bool {
+	return p.cfg.AnimateRollers != nil && *p.cfg.AnimateRollers
+}
+
+// effectiveRollerSpinPeriodS is the period handed to the visuals builder:
+// the configured rate when animation is on, 0 (static) when it is off. This
+// is the single place the gate is applied, so roller_spin_period_s keeps its
+// meaning as a rate rather than doubling as an on/off switch.
+func (p *pickStation) effectiveRollerSpinPeriodS() float64 {
+	if !p.animateRollers() {
+		return 0
+	}
+	return p.cfg.RollerSpinPeriodS
+}
+
+// renderRollers reports whether the roller bed should be drawn.
+// Unset defaults to true so existing configs are unaffected.
+func (p *pickStation) renderRollers() bool {
+	return p.cfg.RenderRollers == nil || *p.cfg.RenderRollers
 }
 
 func (p *pickStation) dimsMap() map[string]interface{} {
@@ -705,6 +762,9 @@ func (p *pickStation) attributesMap() map[string]interface{} {
 		"pick_home_z_offset_mm":  p.cfg.PickHomeZOffsetMM,
 		"conveyor_direction":     map[string]interface{}{"x": conv.X, "y": conv.Y, "z": conv.Z},
 		"roller_spin_period_s":   p.cfg.RollerSpinPeriodS,
+		"render_rollers":         p.renderRollers(),
+		"animate_rollers":        p.animateRollers(),
+		"show_next_box_target":   p.cfg.ShowNextBoxTarget,
 		"pose":                   poseToWorldMap(p.pose),
 		"pickup_pose":            poseToWorldMap(p.pickupPose()),
 		"summary":                p.summaryString(),
@@ -849,6 +909,9 @@ func pickStationSchema() []schemaEntry {
 
 		numEntry("roller_spin_period_s", "Roller spin period (0 = static)",
 			schemaGroupBehavior, "s", 0, 30, 0.1),
+		boolEntry("render_rollers", "Draw roller bed", schemaGroupVisual),
+		boolEntry("animate_rollers", "Spin the rollers (off by default)", schemaGroupVisual),
+		boolEntry("show_next_box_target", "Show next-box target marker (off by default)", schemaGroupVisual),
 
 		colorEntry("color", "Deck color", schemaGroupVisual),
 		boolEntry("visible", "Visible", schemaGroupVisual),

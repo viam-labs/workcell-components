@@ -141,7 +141,7 @@ func stationEntries(infeed *infeedBoxState, dir Vec3D, offset *Vec3D) []visualWi
 	return pickStationVisuals(
 		"pick-station", pose, 400, 1100, 40,
 		defaultPickStationColor, VisualOptions{}, 200,
-		dir, offset, 0, false, 0, infeed,
+		dir, offset, 0, false, 0, true, infeed,
 	)
 }
 
