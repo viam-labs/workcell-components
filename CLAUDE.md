@@ -8,7 +8,7 @@ Viam module that registers the components and the scene service of an automation
 
 - **`viam:workcell-components:pallet`** — pallet on the workcell floor. Renders as a slatted GMA pallet (7 top deck slats + 3 stringers + 3 bottom boards) by default; `style: "block"` swaps stringers for 9 blocks; `style: "plastic"` is a single-piece slate-grey body. Pose comes from the standard `frame:` block. Default dims: 1219.2 × 1016.0 × 152.4 mm, wood-tan.
 
-- **`viam:workcell-components:pick-station`** — inbound conveyor / fixture where boxes arrive. Renders as a roller bed (12 capsules) + 2 side rails + 4 legs + direction arrow; a translucent next-box target cube only with `show_next_box_target: true`. Pose + incline come from `frame:` (incline encoded in `frame.orientation`). Default dims: 400 × 400 × 40 mm. `roller_spin_period_s` is the spin rate; rollers spin only with `animate_rollers: true`, and `render_rollers: false` omits the bed.
+- **`viam:workcell-components:pick-station`** — inbound conveyor / fixture where boxes arrive. Renders as a roller bed (capsule count scales with length) + 2 side rails + 4 legs + direction arrow; a translucent next-box target cube only with `show_next_box_target: true`. Pose + incline come from `frame:` (incline encoded in `frame.orientation`). Default dims: 400 × 400 × 40 mm. `roller_spin_period_s` is the spin rate; rollers spin only with `animate_rollers: true`, and `render_rollers: false` omits the bed.
 
 ### Safety hardware affordances (drag-place via frame block)
 

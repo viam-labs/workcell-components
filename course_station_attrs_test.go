@@ -46,13 +46,22 @@ func stationVisualsSummary(t *testing.T, p *pickStation) (rollers, animated int,
 	return rollers, animated, target
 }
 
-func TestCourseStationAttrs_StaticAndSingleBoxUntilOptedIn(t *testing.T) {
+func TestCourseStationAttrs_StaticAndNoTargetUntilOptedIn(t *testing.T) {
 	ctx := context.Background()
 	var cfg PickStationConfig
 	if err := json.Unmarshal([]byte(courseStationAttrs), &cfg); err != nil {
 		t.Fatalf("parse course attrs: %v", err)
 	}
 	p := newPickStationForTest(t, &cfg)
+
+	defaults, err := p.DoCommand(ctx, map[string]interface{}{"get_attributes": true})
+	if err != nil {
+		t.Fatalf("get_attributes: %v", err)
+	}
+	if defaults["show_next_box_target"] != false || defaults["animate_rollers"] != false {
+		t.Errorf("get_attributes at course attrs: show_next_box_target=%v animate_rollers=%v, want false/false",
+			defaults["show_next_box_target"], defaults["animate_rollers"])
+	}
 
 	rollers, animated, target := stationVisualsSummary(t, p)
 	if rollers == 0 {

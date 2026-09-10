@@ -11,7 +11,7 @@ form editor with a live 3D preview per instance.
 | Model | API | What it is |
 |---|---|---|
 | `viam:workcell-components:pallet` | `rdk:component:generic` | The pallet itself. Slatted GMA stringer/block or single-piece plastic. |
-| `viam:workcell-components:pick-station` | `rdk:component:generic` | Inbound conveyor with rollers + side rails + legs + direction arrow + grasp-target indicator. |
+| `viam:workcell-components:pick-station` | `rdk:component:generic` | Inbound conveyor with rollers + side rails + legs + direction arrow; optional next-box target marker (`show_next_box_target`). |
 | `viam:workcell-components:robot-pedestal` | `rdk:component:generic` | Base under the robot arm. |
 | `viam:workcell-components:safety-fence` | `rdk:component:generic` | Wire-mesh perimeter panel. |
 | `viam:workcell-components:light-curtain` | `rdk:component:generic` | Paired-tower light curtain. |
@@ -26,6 +26,19 @@ form editor with a live 3D preview per instance.
 | `viam:workcell-components:box-detect` | `rdk:component:sensor` | Presence sensor over the pick-station infeed. Simulates the conveyor: a box waits until taken, the next arrives after `interval_seconds`. |
 | `viam:workcell-components:pallet-empty` | `rdk:component:sensor` | Pallet occupancy, read from the pack sequencer's own progress. Reports `pallet_empty`, `pallet_full`, `boxes_on_pallet`, `capacity`. |
 | `viam:workcell-components:tray-dock` | `rdk:component:sensor` | Presence sensor over the outbound tray dock. An empty tray waits; `{"dispatch": true}` sends the full one out and docks a replacement after `exchange_seconds`. |
+
+## Visual and animation toggles
+
+| Attribute | On | Default | Effect |
+|---|---|---|---|
+| `animate_rollers` | `pick-station` | `false` | Spins the roller bed. `roller_spin_period_s` sets the rate but no longer animates on its own. |
+| `render_rollers` | `pick-station` | `true` | `false` omits the roller capsules; the deck and rails still draw. |
+| `show_next_box_target` | `pick-station` | `false` | Draws a translucent cube at the grasp pose. With a box on the station it reads as a second box. |
+| `animations_enabled` | `workcell-scene` | `true` | `false` strips every animation before publishing, leaving objects in place. |
+| `animation_tick_hz` | `workcell-scene` | `30` | Animation update rate, floored at 0.1. |
+
+Roller spin is off by default because it is the whole world-state stream for no visible change: about 630 events/s per
+viewer with it on, versus a one-time snapshot with it off.
 
 ## Frame origins — where the frame block places each component
 
