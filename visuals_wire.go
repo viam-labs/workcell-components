@@ -81,7 +81,22 @@ type visualColorWire struct {
 // wireToVisual parses one entry from a `get_visuals` response into a
 // typed visuals.Visual. Returns an error rather than panicking so a
 // single malformed entry doesn't kill the whole scene poll.
+// wireToVisual decodes one get_visuals entry, honouring any animation
+// spec it carries. Kept as-is for callers/tests that want the default.
 func wireToVisual(m map[string]interface{}) (visuals.Visual, error) {
+	return wireToVisualOpts(m, false)
+}
+
+// wireToVisualOpts is wireToVisual with an animation kill-switch.
+//
+// stripAnimation drops the entry's Animation spec at decode time, so the
+// Visual reaches the scene inert and the library's tick loop has nothing to
+// dispatch for it. This is the single choke point for every visual from every
+// component, which is why the toggle lives here rather than in each builder:
+// the workcell-scene service can silence ALL animation without any component
+// knowing. Object count is unchanged — use a component's own render_* flags
+// for that.
+func wireToVisualOpts(m map[string]interface{}, stripAnimation bool) (visuals.Visual, error) {
 	b, err := json.Marshal(m)
 	if err != nil {
 		return nil, fmt.Errorf("marshal: %w", err)
@@ -100,6 +115,9 @@ func wireToVisual(m map[string]interface{}) (visuals.Visual, error) {
 	color := w.colorToLib()
 	opacity := w.opacityToLib()
 	anim := w.animToLib()
+	if stripAnimation {
+		anim = nil
+	}
 
 	switch w.Type {
 	case "box":

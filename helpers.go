@@ -1,10 +1,48 @@
 package workcellcomponents
 
 import (
+	"errors"
 	"fmt"
+	"time"
 
 	"github.com/golang/geo/r3"
 )
+
+// sensorReadTimeout bounds a paired sensor call from inside a visual
+// builder. A sensor served by this module is called directly and
+// returns at once; the bound matters when the paired sensor lives in
+// another module or on a remote, where the call is an RPC that can hang.
+const sensorReadTimeout = 500 * time.Millisecond
+
+// errNotABoxDetect / errNotATrayDock: the paired sensor answered, but
+// its readings lack the keys the pairing relies on.
+var (
+	errNotABoxDetect = errors.New(
+		"paired sensor readings lack box_present; not a box-detect?")
+	errNotATrayDock = errors.New(
+		"paired sensor readings lack tray_present; not a tray-dock?")
+)
+
+// cardboardColor is the shared box-brown used by the infeed box default
+// and the tray exchange's load silhouette.
+var cardboardColor = Color{R: 176, G: 136, B: 80, A: 1}
+
+// isTruthy reads a DoCommand flag that may arrive as a bool, a number,
+// or a string depending on how the caller's SDK encoded it.
+func isTruthy(v interface{}) bool {
+	switch t := v.(type) {
+	case bool:
+		return t
+	case float64:
+		return t != 0
+	case int:
+		return t != 0
+	case string:
+		return t == "true" || t == "True" || t == "1"
+	default:
+		return false
+	}
+}
 
 // asFloat coerces an interface{} from a DoCommand args map into a
 // float64, handling the typical JSON numeric shapes that arrive at the

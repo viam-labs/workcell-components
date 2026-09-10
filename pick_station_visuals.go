@@ -26,12 +26,32 @@ const (
 // the typical industrial look: dark blue painted side rails, machined-
 // aluminum rollers, gloss-black legs.
 var (
-	pickStationRailColor    = Color{R: 50, G: 80, B: 120, A: 1}   // dark blue
-	pickStationRollerColor  = Color{R: 180, G: 184, B: 190, A: 1} // brushed aluminum
-	pickStationLegColor     = Color{R: 28, G: 28, B: 32, A: 1}    // gloss black
-	pickStationArrowColor  = Color{R: 220, G: 220, B: 60, A: 1} // safety yellow
+	pickStationRailColor   = Color{R: 50, G: 80, B: 120, A: 1}   // dark blue
+	pickStationRollerColor = Color{R: 180, G: 184, B: 190, A: 1} // brushed aluminum
+	pickStationLegColor    = Color{R: 28, G: 28, B: 32, A: 1}    // gloss black
+	pickStationArrowColor  = Color{R: 220, G: 220, B: 60, A: 1}  // safety yellow
 	pickStationTargetColor = Color{R: 60, G: 220, B: 120, A: 0.35}
+	// Matches the pack-sequencer's placed-box color exactly, so the
+	// box the arm lifts looks like the box that arrived.
+	pickStationInfeedBoxColor = cardboardColor
 )
+
+// Default infeed-box dims: a hair under the course's 200x150x100 box
+// so the picked box hides this one while the two coincide.
+const (
+	defaultInfeedBoxWidthMM  = 196.0
+	defaultInfeedBoxLengthMM = 146.0
+	defaultInfeedBoxHeightMM = 98.0
+)
+
+// infeedBoxState is what the paired box-detect sensor said, reduced to
+// the visual's terms.
+type infeedBoxState struct {
+	present  bool    // a box is waiting at the pickup point
+	fraction float64 // 0..1 progress of the next box down the bed
+	dims     Vec3D
+	color    Color
+}
 
 // pickStationVisuals returns the typed visual primitives that compose
 // the pick-station: a roller bed, two side rails, four legs reaching
@@ -53,7 +73,10 @@ func pickStationVisuals(
 	conveyorDir Vec3D,
 	boxOriginOffset *Vec3D,
 	boxThetaDeg float64,
+	showNextBoxTarget bool,
 	rollerSpinPeriodS float64,
+	renderRollers bool,
+	infeed *infeedBoxState,
 ) []visualWire {
 	if opts.Visible != nil && !*opts.Visible {
 		return groupUnderFrame(name, centerPose, false, nil)
@@ -111,6 +134,15 @@ func pickStationVisuals(
 			"mode":     "spin",
 			"period_s": rollerSpinPeriodS,
 		}
+	}
+	// renderRollers=false omits the roller capsules entirely. They are the
+	// single largest contributor to world-state traffic (~17 objects spinning
+	// at the animation tick rate), and they carry no information — the deck
+	// and rails still read as a conveyor without them. Skipping them removes
+	// both the per-tick animation events AND the objects themselves from
+	// ListUUIDs / GetTransform, which is a separate cost.
+	if !renderRollers {
+		count = 0
 	}
 	for i := 0; i < count; i++ {
 		localY := startY + float64(i)*rollerStep
@@ -191,8 +223,10 @@ func pickStationVisuals(
 
 	// Next-box target — a translucent box at the grasp pose, ~120 mm
 	// cube placed at the BoxOriginOffsetMM in station-local frame.
-	// Helps operators see where the palletizer will reach next.
-	if boxOriginOffset != nil && (boxOriginOffset.X != 0 || boxOriginOffset.Y != 0 || boxOriginOffset.Z != 0) {
+	// Helps operators see where the palletizer will reach next. Off
+	// unless explicitly enabled: with a box configured it otherwise
+	// reads as a spurious second box in the 3D scene.
+	if showNextBoxTarget && boxOriginOffset != nil && (boxOriginOffset.X != 0 || boxOriginOffset.Y != 0 || boxOriginOffset.Z != 0) {
 		// Convert offset from station-local (corner-anchored) to
 		// centroid-anchored: subtract (w/2, l/2, -t/2).
 		localCenterX := boxOriginOffset.X - width/2
@@ -203,6 +237,53 @@ func pickStationVisuals(
 			compose(centerPose, localCenterX, localCenterY, localCenterZ, 0, 0, 1, boxThetaDeg),
 			120, 120, 120,
 			pickStationTargetColor, opts,
+		))
+	}
+
+	// Infeed box — driven by the paired box-detect sensor. While the
+	// sensor counts down, the box travels the bed toward the pickup
+	// point; while box_present, it waits there.
+	if infeed != nil {
+		// A nil offset means the pickup sits at the corner origin,
+		// same convention as pickupPose; the infeed box still renders.
+		off := boxOriginOffset
+		if off == nil {
+			off = &Vec3D{}
+		}
+		px := off.X - width/2
+		py := off.Y - length/2
+		bz := off.Z + thickness/2 + infeed.dims.Z/2
+		nx, ny, _ := normalizeDir(conveyorDir)
+		// Entry point: walk backward from the pickup along the
+		// conveyor direction to the bed's upstream edge (dominant
+		// axis decides which edge).
+		ex, ey := px, py
+		if math.Abs(ny) >= math.Abs(nx) && ny != 0 {
+			edge := -length / 2
+			if ny < 0 {
+				edge = length / 2
+			}
+			t := (py - edge) / ny
+			ex, ey = px-nx*t, py-ny*t
+		} else if nx != 0 {
+			edge := -width / 2
+			if nx < 0 {
+				edge = width / 2
+			}
+			t := (px - edge) / nx
+			ex, ey = px-nx*t, py-ny*t
+		}
+		bx, by := px, py
+		if !infeed.present {
+			f := clamp01(infeed.fraction)
+			bx = ex + (px-ex)*f
+			by = ey + (py-ey)*f
+		}
+		out = append(out, boxAt(
+			fmt.Sprintf("%s/infeed-box", name),
+			compose(centerPose, bx, by, bz, 0, 0, 1, boxThetaDeg),
+			infeed.dims.X, infeed.dims.Y, infeed.dims.Z,
+			infeed.color, opts,
 		))
 	}
 

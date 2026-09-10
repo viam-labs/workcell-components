@@ -11,7 +11,7 @@ form editor with a live 3D preview per instance.
 | Model | API | What it is |
 |---|---|---|
 | `viam:workcell-components:pallet` | `rdk:component:generic` | The pallet itself. Slatted GMA stringer/block or single-piece plastic. |
-| `viam:workcell-components:pick-station` | `rdk:component:generic` | Inbound conveyor with rollers + side rails + legs + direction arrow + grasp-target indicator. |
+| `viam:workcell-components:pick-station` | `rdk:component:generic` | Inbound conveyor with rollers + side rails + legs + direction arrow; optional next-box target marker (`show_next_box_target`). |
 | `viam:workcell-components:robot-pedestal` | `rdk:component:generic` | Base under the robot arm. |
 | `viam:workcell-components:safety-fence` | `rdk:component:generic` | Wire-mesh perimeter panel. |
 | `viam:workcell-components:light-curtain` | `rdk:component:generic` | Paired-tower light curtain. |
@@ -23,6 +23,83 @@ form editor with a live 3D preview per instance.
 | `viam:workcell-components:workcell-bounds` | `rdk:component:generic` | Wire-frame footprint of the cell. |
 | `viam:workcell-components:scan-tunnel` | `rdk:component:generic` | Fixed-mount barcode/SKU scan tunnel: gantry frame + reader heads + pulsing scan line (1- or 3-sided). |
 | `viam:workcell-components:workcell-scene` | `rdk:service:world_state_store` | Polls every component's `get_visuals` and republishes to the 3D viewer. |
+| `viam:workcell-components:box-detect` | `rdk:component:sensor` | Presence sensor over the pick-station infeed. Simulates the conveyor: a box waits until taken, the next arrives after `interval_seconds`. **Off until `enabled: true`.** |
+| `viam:workcell-components:pallet-empty` | `rdk:component:sensor` | Pallet occupancy, read from the pack sequencer's own progress. Reports `pallet_empty`, `pallet_full`, `boxes_on_pallet`, `capacity`. |
+| `viam:workcell-components:tray-dock` | `rdk:component:sensor` | Presence sensor over the outbound tray dock. An empty tray waits; `{"dispatch": true}` sends the full one out and docks a replacement after `exchange_seconds`. |
+
+## Visual and animation toggles
+
+| Attribute | On | Default | Effect |
+|---|---|---|---|
+| `animate_rollers` | `pick-station` | `false` | Spins the roller bed. `roller_spin_period_s` sets the rate but no longer animates on its own. |
+| `render_rollers` | `pick-station` | `true` | `false` omits the roller capsules; the deck and rails still draw. |
+| `show_next_box_target` | `pick-station` | `false` | Draws a translucent cube at the grasp pose. With a box on the station it reads as a second box. |
+| `animations_enabled` | `workcell-scene` | `true` | `false` strips every animation before publishing, leaving objects in place. |
+| `animation_tick_hz` | `workcell-scene` | `30` | Animation update rate, floored at 0.1. |
+
+Roller spin is off by default because it is the whole world-state stream for no visible change: about 630 events/s per
+viewer with it on, versus a one-time snapshot with it off.
+
+## Sensors and pairings
+
+The three sensors simulate parts of a cell that are not modeled: an infeed that presents boxes, an outbound tray
+dock, and pallet occupancy. Pair a sensor with a component by naming it in that component's config.
+
+### `box-detect`
+
+| Attribute | Default | Effect |
+|---|---|---|
+| `enabled` | `false` | **Off by default.** While disabled, `box_present` stays `false`, `take` answers `taken: false` with an error, and a paired pick-station draws no infeed box. Set `true` to run the infeed. |
+| `interval_seconds` | `4` | Time for the next box to arrive after one is taken. At most 86400. |
+| `start_empty` | `false` | Start with no box until the first interval passes. |
+
+Readings: `enabled`, `box_present`, `seconds_until_next`, `interval_seconds`. DoCommand: `{"take": true}` consumes
+the waiting box; `{"reset": true}` presents one immediately.
+
+### `tray-dock`
+
+| Attribute | Default | Effect |
+|---|---|---|
+| `exchange_seconds` | `8` | Time for a dispatch: the full tray leaves and an empty one docks. At most 86400. |
+| `start_empty` | `false` | Start with no tray docked until the first exchange passes. |
+
+Readings: `tray_present`, `seconds_until_docked`, `exchange_seconds`. DoCommand: `{"dispatch": true}` sends the
+docked tray out; `{"reset": true}` docks one immediately. The dock has no `enabled` flag.
+
+### `pallet-empty`
+
+| Attribute | Default | Effect |
+|---|---|---|
+| `world_state_store` | `pack-sequencer` | The `viam:pack-sequencer` service to read progress from. |
+
+Readings: `pallet_empty`, `pallet_full`, `boxes_on_pallet`, `capacity`. The count comes from the sequencer's
+`get_progress` (0.3.x, `placed_count`) or `get_status` (0.4.0 and later, `placed`), so it only counts placements
+the placer reports to the sequencer. If neither verb answers with a count, the reading is an error, never
+`pallet_empty: true`.
+
+### Pairing attributes
+
+| Attribute | On | Default | Effect |
+|---|---|---|---|
+| `infeed_box_detect` | `pick-station` | none | Names a `box-detect`. The station draws an infeed box that travels the bed with the sensor's countdown, and `{"take": true}` on the station forwards to the sensor. |
+| `infeed_box_dims_mm` | `pick-station` | `{x: 196, y: 146, z: 98}` | Size of the drawn infeed box. |
+| `infeed_box_color` | `pick-station` | cardboard `{r: 176, g: 136, b: 80}` | Color of the drawn infeed box. |
+| `tray_dock` | `pallet` | none | Names a `tray-dock`. The pallet draws an outfeed conveyor and animates the tray exchange during a dispatch. |
+| `exchange_travel_mm` | `pallet` | `1200` | How far the tray travels during an exchange. |
+| `exchange_load_height_mm` | `pallet` | `200` | Height of the load silhouette on the outbound tray; `0` hides it. |
+
+### Pairings are required dependencies
+
+A paired sensor is a required dependency of the component that names it, so the component never builds before the
+sensor exists. The cost is rebuilds: changing a paired sensor's config rebuilds the component that names it, and
+then everything that depends on that component.
+
+- Editing `box-detect` rebuilds `pick-station`, then `workcell-scene`, so open 3D viewers re-subscribe.
+- Editing `tray-dock` rebuilds `pallet`, then what depends on the pallet. `viam:pack-sequencer` depends on the
+  pallet and keeps pack progress in memory, so editing `tray-dock` mid-pack resets the pack, and `pallet-empty`
+  then reads empty.
+- Removing or renaming a paired sensor without clearing the attribute leaves the component, and everything that
+  depends on it, unbuilt.
 
 ## Frame origins — where the frame block places each component
 

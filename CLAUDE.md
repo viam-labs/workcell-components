@@ -2,13 +2,13 @@
 
 ## What this is
 
-Viam module that registers the components and the scene service of an automation workcell. As of 0.6.0 there are twelve registered models:
+Viam module that registers the components and the scene service of an automation workcell. As of 0.7.0 there are sixteen registered models (twelve visual/affordance components, three sensors, and the workcell-scene service):
 
 ### Core components
 
 - **`viam:workcell-components:pallet`** — pallet on the workcell floor. Renders as a slatted GMA pallet (7 top deck slats + 3 stringers + 3 bottom boards) by default; `style: "block"` swaps stringers for 9 blocks; `style: "plastic"` is a single-piece slate-grey body. Pose comes from the standard `frame:` block. Default dims: 1219.2 × 1016.0 × 152.4 mm, wood-tan.
 
-- **`viam:workcell-components:pick-station`** — inbound conveyor / fixture where boxes arrive. Renders as a roller bed (12 capsules) + 2 side rails + 4 legs + direction arrow + translucent next-pick target. Pose + incline come from `frame:` (incline encoded in `frame.orientation`). Default dims: 400 × 400 × 40 mm. `roller_spin_period_s > 0` animates the rollers.
+- **`viam:workcell-components:pick-station`** — inbound conveyor / fixture where boxes arrive. Renders as a roller bed (capsule count scales with length) + 2 side rails + 4 legs + direction arrow; a translucent next-box target cube only with `show_next_box_target: true`. Pose + incline come from `frame:` (incline encoded in `frame.orientation`). Default dims: 400 × 400 × 40 mm. `roller_spin_period_s` is the spin rate; rollers spin only with `animate_rollers: true`, and `render_rollers: false` omits the bed.
 
 ### Safety hardware affordances (drag-place via frame block)
 
@@ -127,9 +127,13 @@ workcell-components/
 ├── hmi_cabinet.go             (Tier 3)
 ├── floor_decal.go             (Tier 3)
 ├── workcell_bounds.go         (Tier 3)
+├── scan_tunnel.go             (Tier 3)
+├── box_detect.go              (sensor: pick-station infeed presence)
+├── pallet_empty.go            (sensor: pallet occupancy from the pack sequencer)
+├── tray_dock.go               (sensor: outbound tray dock; mirror of box-detect)
 ├── visuals_wire_test.go       (Phase A/B/C/E unit tests)
 ├── pure_test.go               (existing pose/dim tests)
-└── cmd/module/main.go         (registers all 12 models via module.ModularMain)
+└── cmd/module/main.go         (registers all 16 models via module.ModularMain)
 ```
 
 ## Build + publish

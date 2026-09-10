@@ -9,6 +9,7 @@ import (
 	"github.com/golang/geo/r3"
 	wcsh "github.com/viam-labs/viamkit/geom"
 	"go.viam.com/rdk/components/generic"
+	"go.viam.com/rdk/components/sensor"
 	"go.viam.com/rdk/logging"
 	"go.viam.com/rdk/referenceframe"
 	"go.viam.com/rdk/resource"
@@ -90,6 +91,12 @@ type PickStationConfig struct {
 	// Positive = CCW viewed from above.
 	BoxThetaDeg float64 `json:"box_theta_deg,omitempty"`
 
+	// ShowNextBoxTarget draws a translucent marker cube at the grasp
+	// pose (an operator hint for where the palletizer reaches next).
+	// Off by default: with a box configured it reads as a spurious
+	// second box in the 3D scene. Opt in for operator/debug views.
+	ShowNextBoxTarget bool `json:"show_next_box_target,omitempty"`
+
 	// PickHomeZOffsetMM is the gripper's pre-grab waypoint above the
 	// top of the box. Z-only offset — XY same as the vacuum point.
 	PickHomeZOffsetMM float64 `json:"pick_home_z_offset_mm,omitempty"`
@@ -112,12 +119,54 @@ type PickStationConfig struct {
 	// Defaults to {0, 1, 0} (boxes flow in world +Y) when unset.
 	ConveyorDirection *Vec3D `json:"conveyor_direction,omitempty"`
 
-	// RollerSpinPeriodS controls roller animation. When > 0, rollers
-	// spin around their long axis with this period (seconds per
-	// revolution). 0 / unset = static. Visual only; no motion-plan
-	// or palletizer effect. Useful for visual feedback that the
-	// conveyor is "live."
+	// RollerSpinPeriodS is the roller spin RATE (seconds per
+	// revolution) when roller animation is enabled. Visual only; no
+	// motion-plan or palletizer effect.
+	//
+	// Setting this alone no longer animates anything — see
+	// AnimateRollers. The rate and the on/off switch are separate so a
+	// cell can keep its tuned period while animation is off.
 	RollerSpinPeriodS float64 `json:"roller_spin_period_s,omitempty"`
+
+	// AnimateRollers turns roller spin on. Unset = FALSE: rollers are
+	// drawn but static.
+	//
+	// Off by default because spinning rollers are, by measurement, the
+	// entire world-state stream and buy nothing: ~629 events/s and
+	// ~634 KB/s per viewer with animation on versus ~6 events/s with it
+	// off, for motion that produced ZERO changing render slots over
+	// 20.5s at 60fps. A viewer cannot see it; every subscriber pays for
+	// it continuously, moving or idle.
+	//
+	// Set true to opt back in.
+	AnimateRollers *bool `json:"animate_rollers,omitempty"`
+
+	// RenderRollers draws the roller bed. Unset = true (existing
+	// behaviour). Set false to omit the roller capsules: the deck and
+	// side rails still read as a conveyor, but ~17 animated objects
+	// leave the scene. On the Viam 102 workcell those rollers were the
+	// entire world-state stream — ~623 events/s and ~634 KB/s per
+	// viewer, continuously, for motion no one can actually see.
+	RenderRollers *bool `json:"render_rollers,omitempty"`
+
+	// InfeedBoxDetect names a box-detect sensor on the same machine.
+	// When set, the station renders an infeed box that travels down
+	// the bed in time with the sensor's countdown, and waits at the
+	// pickup point while the sensor reports box_present. The sensor
+	// becomes a required dependency of the station; without the
+	// attribute the station renders exactly as before.
+	InfeedBoxDetect string `json:"infeed_box_detect,omitempty"`
+
+	// InfeedBoxDimsMM sizes the rendered infeed box. Defaults to
+	// 196x146x98 — a hair under the course box, so the picked
+	// (pack-sequencer-drawn) box hides it while the two coincide at
+	// the grasp pose.
+	InfeedBoxDimsMM *Vec3D `json:"infeed_box_dims_mm,omitempty"`
+
+	// InfeedBoxColor paints the rendered infeed box. Defaults to
+	// cardboard. Set it to whatever the cell's placed boxes render
+	// as, so the arriving box and the picked box read as one object.
+	InfeedBoxColor *Color `json:"infeed_box_color,omitempty"`
 
 	Label string `json:"label,omitempty"`
 
@@ -136,6 +185,13 @@ func (c *PickStationConfig) Validate(_ string) ([]string, []string, error) {
 		if err := validateColor(*c.Color); err != nil {
 			return nil, nil, err
 		}
+	}
+	if c.InfeedBoxDetect != "" {
+		// Required, deliberately: optional dependencies do not order
+		// the build graph, so after a reconfigure the station can be
+		// rebuilt before the sensor exists and silently lose it. A
+		// config that names a sensor wants the sensor.
+		return []string{sensor.Named(c.InfeedBoxDetect).String()}, nil, nil
 	}
 	return nil, nil, nil
 }
@@ -165,11 +221,18 @@ type pickStation struct {
 	width, length, thickness float64
 	color                    Color
 	cfg                      PickStationConfig
+
+	// infeed is the paired box-detect sensor, nil when the config
+	// names none.
+	infeed sensor.Sensor
+	// infeedReadFailing tracks read health so failures log once per
+	// outage rather than once per scene tick.
+	infeedReadFailing bool
 }
 
 func newPickStation(
 	_ context.Context,
-	_ resource.Dependencies,
+	deps resource.Dependencies,
 	conf resource.Config,
 	logger logging.Logger,
 ) (resource.Resource, error) {
@@ -198,11 +261,25 @@ func newPickStation(
 	cornerPose := spatialmath.Compose(centerPose, cornerOffset)
 
 	logger.Infow("pick-station configured",
+		"infeed_box_detect", cfg.InfeedBoxDetect,
 		"corner_x", cornerPose.Point().X, "corner_y", cornerPose.Point().Y, "corner_z", cornerPose.Point().Z,
 		"width_mm", w, "length_mm", l, "thickness_mm", t,
 		"pitch_incline_deg", pitchInclineDeg, "roll_incline_deg", rollInclineDeg, "yaw_deg", yaw,
 		"color_r", color.R, "color_g", color.G, "color_b", color.B,
 	)
+
+	var infeed sensor.Sensor
+	if cfg.InfeedBoxDetect != "" {
+		snsr, err := sensor.FromDependencies(deps, cfg.InfeedBoxDetect)
+		if err != nil {
+			// Unreachable in practice: Validate declares the sensor as
+			// a required dependency, so the graph withholds this
+			// constructor until it exists. Fail loudly if it happens.
+			return nil, fmt.Errorf(
+				"infeed_box_detect %q: %w", cfg.InfeedBoxDetect, err)
+		}
+		infeed = snsr
+	}
 
 	return &pickStation{
 		name:      conf.ResourceName(),
@@ -213,6 +290,7 @@ func newPickStation(
 		thickness: t,
 		color:     color,
 		cfg:       *cfg,
+		infeed:    infeed,
 	}, nil
 }
 
@@ -272,6 +350,9 @@ func (p *pickStation) Name() resource.Name { return p.name }
 //	                                → world pose at box top center
 //	{"get_conveyor_direction": true}
 //	                                → {x, y, z} unit vector
+//	{"take": true}                 → consume the waiting infeed box
+//	                                  (forwards to the paired
+//	                                  infeed_box_detect sensor)
 //	{"get_attributes": true}       → batch read of everything
 //	{"get_status": true}           → {ok, name, model, dims_valid,
 //	                                  color_valid, visible, show_axes}
@@ -290,7 +371,38 @@ func (p *pickStation) Name() resource.Name { return p.name }
 // All set_* responses include `{"persisted": false, "hint":
 // "…live until reconfigure…"}` so callers see that in-memory edits
 // revert on next config reload.
-func (p *pickStation) DoCommand(_ context.Context, cmd map[string]interface{}) (map[string]interface{}, error) {
+func (p *pickStation) DoCommand(ctx context.Context, cmd map[string]interface{}) (map[string]interface{}, error) {
+	// Read the paired infeed sensor before taking the component lock.
+	// A box-detect in this module is handed over as the object itself,
+	// so this is a direct call; a sensor served elsewhere is an RPC.
+	// Either way it never runs under p.mu, and infeedState bounds it.
+	var infeed *infeedBoxState
+	if _, ok := cmd["get_visuals"]; ok {
+		infeed = p.infeedState(ctx)
+	}
+
+	// take forwards to the paired sensor under the same rules: outside
+	// the lock, bounded like the reads.
+	if isTruthy(cmd["take"]) {
+		p.mu.Lock()
+		snsr := p.infeed
+		p.mu.Unlock()
+		if snsr == nil {
+			return map[string]interface{}{
+				"taken": false,
+				"error": "no infeed_box_detect sensor paired",
+			}, nil
+		}
+		rctx, cancel := context.WithTimeout(ctx, sensorReadTimeout)
+		defer cancel()
+		resp, err := snsr.DoCommand(rctx, map[string]interface{}{"take": true})
+		if err != nil {
+			return nil, fmt.Errorf("take: forwarding to %q: %w",
+				p.cfg.InfeedBoxDetect, err)
+		}
+		return resp, nil
+	}
+
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -346,7 +458,10 @@ func (p *pickStation) DoCommand(_ context.Context, cmd map[string]interface{}) (
 			conv,
 			p.cfg.BoxOriginOffsetMM,
 			p.cfg.BoxThetaDeg,
-			p.cfg.RollerSpinPeriodS,
+			p.cfg.ShowNextBoxTarget,
+			p.effectiveRollerSpinPeriodS(),
+			p.renderRollers(),
+			infeed,
 		)
 		out, err := visualsToMaps(entries)
 		if err != nil {
@@ -388,6 +503,76 @@ func (p *pickStation) effectiveConveyorDirection() Vec3D {
 }
 
 // statusMap returns the runtime health snapshot. Caller must hold p.mu.
+// infeedState reads the paired box-detect sensor into the visual's
+// terms: is a box waiting, and how far along the bed is the next one.
+// Returns nil (no infeed box drawn) with no sensor, a failed read, or
+// readings that do not look like a box-detect's. Takes p.mu only long
+// enough to copy config; the sensor RPC runs unlocked and bounded.
+func (p *pickStation) infeedState(ctx context.Context) *infeedBoxState {
+	p.mu.Lock()
+	infeed := p.infeed
+	dims := Vec3D{
+		X: defaultInfeedBoxWidthMM,
+		Y: defaultInfeedBoxLengthMM,
+		Z: defaultInfeedBoxHeightMM,
+	}
+	if d := p.cfg.InfeedBoxDimsMM; d != nil && d.X > 0 && d.Y > 0 && d.Z > 0 {
+		dims = *d
+	}
+	color := pickStationInfeedBoxColor
+	if c := p.cfg.InfeedBoxColor; c != nil {
+		color = *c
+	}
+	p.mu.Unlock()
+
+	if infeed == nil {
+		return nil
+	}
+	rctx, cancel := context.WithTimeout(ctx, sensorReadTimeout)
+	defer cancel()
+	rd, err := infeed.Readings(rctx, nil)
+	if err != nil {
+		p.noteInfeedRead(false, err)
+		return nil
+	}
+	present, ok := rd["box_present"].(bool)
+	if !ok {
+		p.noteInfeedRead(false, errNotABoxDetect)
+		return nil
+	}
+	p.noteInfeedRead(true, nil)
+	// A disabled infeed renders nothing at all: no waiting box, no
+	// traveling ghost. Sensors that predate the flag report no
+	// "enabled" key and stay always-on.
+	if enabled, ok := rd["enabled"].(bool); ok && !enabled {
+		return nil
+	}
+	st := &infeedBoxState{present: present, dims: dims, color: color}
+	remaining := asFloat(rd["seconds_until_next"])
+	interval := asFloat(rd["interval_seconds"])
+	if !st.present && interval > 0 {
+		st.fraction = 1 - remaining/interval
+	}
+	return st
+}
+
+// noteInfeedRead logs infeed read failures on the ok-to-failing
+// transition only, so a wedged sensor does not flood at the scene's
+// poll rate. Caller must NOT hold p.mu.
+func (p *pickStation) noteInfeedRead(ok bool, err error) {
+	p.mu.Lock()
+	was := p.infeedReadFailing
+	p.infeedReadFailing = !ok
+	p.mu.Unlock()
+	if !ok && !was {
+		p.logger.Warnw("infeed box-detect readings failed; "+
+			"infeed box not rendered until reads recover", "error", err)
+	}
+	if ok && was {
+		p.logger.Infow("infeed box-detect readings recovered")
+	}
+}
+
 func (p *pickStation) statusMap() map[string]interface{} {
 	visible := true
 	if p.cfg.Visible != nil {
@@ -511,9 +696,42 @@ func (p *pickStation) setAttributes(v interface{}) (map[string]interface{}, erro
 	if _, ok := m["roller_spin_period_s"]; ok {
 		p.cfg.RollerSpinPeriodS = asFloat(m["roller_spin_period_s"])
 	}
+	if v2, ok := m["render_rollers"].(bool); ok {
+		p.cfg.RenderRollers = &v2
+	}
+	if v2, ok := m["animate_rollers"].(bool); ok {
+		p.cfg.AnimateRollers = &v2
+	}
+	if v2, ok := m["show_next_box_target"].(bool); ok {
+		p.cfg.ShowNextBoxTarget = v2
+	}
 	applyVisualOptions(&p.cfg.VisualOptions, m)
 	p.logger.Infow("pick-station attributes updated via DoCommand")
 	return p.attributesMap(), nil
+}
+
+// animateRollers reports whether roller spin is enabled. Unset = false:
+// animation is opt-in, because it is pure world-state traffic for motion
+// nobody can see (see AnimateRollers).
+func (p *pickStation) animateRollers() bool {
+	return p.cfg.AnimateRollers != nil && *p.cfg.AnimateRollers
+}
+
+// effectiveRollerSpinPeriodS is the period handed to the visuals builder:
+// the configured rate when animation is on, 0 (static) when it is off. This
+// is the single place the gate is applied, so roller_spin_period_s keeps its
+// meaning as a rate rather than doubling as an on/off switch.
+func (p *pickStation) effectiveRollerSpinPeriodS() float64 {
+	if !p.animateRollers() {
+		return 0
+	}
+	return p.cfg.RollerSpinPeriodS
+}
+
+// renderRollers reports whether the roller bed should be drawn.
+// Unset defaults to true so existing configs are unaffected.
+func (p *pickStation) renderRollers() bool {
+	return p.cfg.RenderRollers == nil || *p.cfg.RenderRollers
 }
 
 func (p *pickStation) dimsMap() map[string]interface{} {
@@ -545,6 +763,9 @@ func (p *pickStation) attributesMap() map[string]interface{} {
 		"pick_home_z_offset_mm":  p.cfg.PickHomeZOffsetMM,
 		"conveyor_direction":     map[string]interface{}{"x": conv.X, "y": conv.Y, "z": conv.Z},
 		"roller_spin_period_s":   p.cfg.RollerSpinPeriodS,
+		"render_rollers":         p.renderRollers(),
+		"animate_rollers":        p.animateRollers(),
+		"show_next_box_target":   p.cfg.ShowNextBoxTarget,
 		"pose":                   poseToWorldMap(p.pose),
 		"pickup_pose":            poseToWorldMap(p.pickupPose()),
 		"summary":                p.summaryString(),
@@ -689,6 +910,9 @@ func pickStationSchema() []schemaEntry {
 
 		numEntry("roller_spin_period_s", "Roller spin period (0 = static)",
 			schemaGroupBehavior, "s", 0, 30, 0.1),
+		boolEntry("render_rollers", "Draw roller bed", schemaGroupVisual),
+		boolEntry("animate_rollers", "Spin the rollers (off by default)", schemaGroupVisual),
+		boolEntry("show_next_box_target", "Show next-box target marker (off by default)", schemaGroupVisual),
 
 		colorEntry("color", "Deck color", schemaGroupVisual),
 		boolEntry("visible", "Visible", schemaGroupVisual),
@@ -698,7 +922,7 @@ func pickStationSchema() []schemaEntry {
 }
 
 // decomposeRPYDeg returns roll/pitch/yaw (degrees) from any
-// spatialmath.Orientation, using the Tait-Bryan z-y'-x'' convention
+// spatialmath.Orientation, using the Tait-Bryan z-y'-x” convention
 // that matches spatialmath.EulerAngles.
 func decomposeRPYDeg(o spatialmath.Orientation) (roll, pitch, yaw float64) {
 	if o == nil {
