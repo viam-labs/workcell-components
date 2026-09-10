@@ -701,6 +701,9 @@ func (p *pickStation) setAttributes(v interface{}) (map[string]interface{}, erro
 	if v2, ok := m["animate_rollers"].(bool); ok {
 		p.cfg.AnimateRollers = &v2
 	}
+	if v2, ok := m["show_next_box_target"].(bool); ok {
+		p.cfg.ShowNextBoxTarget = v2
+	}
 	applyVisualOptions(&p.cfg.VisualOptions, m)
 	p.logger.Infow("pick-station attributes updated via DoCommand")
 	return p.attributesMap(), nil
@@ -761,6 +764,7 @@ func (p *pickStation) attributesMap() map[string]interface{} {
 		"roller_spin_period_s":   p.cfg.RollerSpinPeriodS,
 		"render_rollers":         p.renderRollers(),
 		"animate_rollers":        p.animateRollers(),
+		"show_next_box_target":   p.cfg.ShowNextBoxTarget,
 		"pose":                   poseToWorldMap(p.pose),
 		"pickup_pose":            poseToWorldMap(p.pickupPose()),
 		"summary":                p.summaryString(),
@@ -907,6 +911,7 @@ func pickStationSchema() []schemaEntry {
 			schemaGroupBehavior, "s", 0, 30, 0.1),
 		boolEntry("render_rollers", "Draw roller bed", schemaGroupVisual),
 		boolEntry("animate_rollers", "Spin the rollers (off by default)", schemaGroupVisual),
+		boolEntry("show_next_box_target", "Show next-box target marker (off by default)", schemaGroupVisual),
 
 		colorEntry("color", "Deck color", schemaGroupVisual),
 		boolEntry("visible", "Visible", schemaGroupVisual),
