@@ -73,6 +73,7 @@ func pickStationVisuals(
 	conveyorDir Vec3D,
 	boxOriginOffset *Vec3D,
 	boxThetaDeg float64,
+	showNextBoxTarget bool,
 	rollerSpinPeriodS float64,
 	renderRollers bool,
 	infeed *infeedBoxState,
@@ -222,8 +223,10 @@ func pickStationVisuals(
 
 	// Next-box target — a translucent box at the grasp pose, ~120 mm
 	// cube placed at the BoxOriginOffsetMM in station-local frame.
-	// Helps operators see where the palletizer will reach next.
-	if boxOriginOffset != nil && (boxOriginOffset.X != 0 || boxOriginOffset.Y != 0 || boxOriginOffset.Z != 0) {
+	// Helps operators see where the palletizer will reach next. Off
+	// unless explicitly enabled: with a box configured it otherwise
+	// reads as a spurious second box in the 3D scene.
+	if showNextBoxTarget && boxOriginOffset != nil && (boxOriginOffset.X != 0 || boxOriginOffset.Y != 0 || boxOriginOffset.Z != 0) {
 		// Convert offset from station-local (corner-anchored) to
 		// centroid-anchored: subtract (w/2, l/2, -t/2).
 		localCenterX := boxOriginOffset.X - width/2

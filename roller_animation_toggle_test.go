@@ -25,7 +25,7 @@ func stationWithRollers(render bool) []visualWire {
 	return pickStationVisuals(
 		"pick-station", pose, 400, 1100, 40,
 		defaultPickStationColor, VisualOptions{}, 200,
-		Vec3D{X: 0, Y: 1, Z: 0}, nil, 0, 2.0, render, nil,
+		Vec3D{X: 0, Y: 1, Z: 0}, nil, 0, false, 2.0, render, nil,
 	)
 }
 
@@ -149,7 +149,7 @@ func TestNoAnimationSpecsWhenRollerAnimationOff(t *testing.T) {
 	entries := pickStationVisuals(
 		"pick-station", pose, 400, 1100, 40,
 		defaultPickStationColor, VisualOptions{}, 200,
-		Vec3D{X: 0, Y: 1, Z: 0}, nil, 0, 0, true, nil,
+		Vec3D{X: 0, Y: 1, Z: 0}, nil, 0, false, 0, true, nil,
 	)
 	if rollerCount(entries) == 0 {
 		t.Fatal("rollers must still be drawn when animation is off")
