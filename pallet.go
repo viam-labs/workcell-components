@@ -306,9 +306,10 @@ func (p *pallet) Name() resource.Name { return p.name }
 // "…"}` so callers see that live mutation does NOT survive a
 // reconfigure (the cell config wins on next reload).
 func (p *pallet) DoCommand(ctx context.Context, cmd map[string]interface{}) (map[string]interface{}, error) {
-	// The dock sensor read round-trips through viam-server; do it
-	// before taking the component lock so a slow sensor cannot stall
-	// pose queries.
+	// Read the paired tray-dock before taking the component lock. A
+	// tray-dock in this module is handed over as the object itself, so
+	// this is a direct call; a sensor served elsewhere is an RPC. Either
+	// way it never runs under p.mu, and exchangeState bounds it.
 	var exchange *trayExchangeState
 	if _, ok := cmd["get_visuals"]; ok {
 		exchange = p.exchangeState(ctx)

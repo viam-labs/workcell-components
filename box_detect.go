@@ -167,7 +167,13 @@ func (b *boxDetect) DoCommand(
 
 	case isTruthy(cmd["reset"]):
 		b.readyAt = time.Time{}
-		return map[string]interface{}{"box_present": true}, nil
+		// Answer what Readings will say: a disabled infeed still has no box.
+		here, _ := b.present()
+		out := map[string]interface{}{"box_present": here}
+		if !b.enabled {
+			out["error"] = "infeed disabled: set enabled: true on box-detect"
+		}
+		return out, nil
 
 	default:
 		return nil, fmt.Errorf("box-detect: unknown command %v", cmd)

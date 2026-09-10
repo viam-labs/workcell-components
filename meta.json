@@ -72,7 +72,7 @@
     {
       "api": "rdk:component:sensor",
       "model": "viam:workcell-components:box-detect",
-      "description": "Presence sensor over the pick-station infeed. Readings: box_present, seconds_until_next, interval_seconds. DoCommand {\"take\": true} consumes the waiting box and starts the next interval."
+      "description": "Presence sensor over the pick-station infeed. Off until enabled: true. Readings: enabled, box_present, seconds_until_next, interval_seconds. DoCommand {\"take\": true} consumes the waiting box and starts the next interval."
     },
     {
       "api": "rdk:component:sensor",

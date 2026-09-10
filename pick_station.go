@@ -372,16 +372,17 @@ func (p *pickStation) Name() resource.Name { return p.name }
 // "…live until reconfigure…"}` so callers see that in-memory edits
 // revert on next config reload.
 func (p *pickStation) DoCommand(ctx context.Context, cmd map[string]interface{}) (map[string]interface{}, error) {
-	// The infeed sensor read round-trips through viam-server; do it
-	// before taking the component lock so a slow sensor cannot stall
-	// pose queries.
+	// Read the paired infeed sensor before taking the component lock.
+	// A box-detect in this module is handed over as the object itself,
+	// so this is a direct call; a sensor served elsewhere is an RPC.
+	// Either way it never runs under p.mu, and infeedState bounds it.
 	var infeed *infeedBoxState
 	if _, ok := cmd["get_visuals"]; ok {
 		infeed = p.infeedState(ctx)
 	}
 
-	// take also round-trips through viam-server to the paired sensor;
-	// forward it before taking the lock, bounded like the reads.
+	// take forwards to the paired sensor under the same rules: outside
+	// the lock, bounded like the reads.
 	if isTruthy(cmd["take"]) {
 		p.mu.Lock()
 		snsr := p.infeed

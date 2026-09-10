@@ -8,11 +8,10 @@ import (
 	"github.com/golang/geo/r3"
 )
 
-// asFloat coerces an interface{} from a DoCommand args map into a
-// float64, handling the typical JSON numeric shapes that arrive at the
-// gRPC boundary. Returns 0 for any non-numeric input.
-// sensorReadTimeout bounds a paired sensor's Readings RPC from inside
-// a visual builder, so a wedged sensor cannot stall a component.
+// sensorReadTimeout bounds a paired sensor call from inside a visual
+// builder. A sensor served by this module is called directly and
+// returns at once; the bound matters when the paired sensor lives in
+// another module or on a remote, where the call is an RPC that can hang.
 const sensorReadTimeout = 500 * time.Millisecond
 
 // errNotABoxDetect / errNotATrayDock: the paired sensor answered, but
@@ -45,6 +44,9 @@ func isTruthy(v interface{}) bool {
 	}
 }
 
+// asFloat coerces an interface{} from a DoCommand args map into a
+// float64, handling the typical JSON numeric shapes that arrive at the
+// gRPC boundary. Returns 0 for any non-numeric input.
 func asFloat(v interface{}) float64 {
 	switch n := v.(type) {
 	case float64:
