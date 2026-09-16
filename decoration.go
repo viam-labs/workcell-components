@@ -1,6 +1,7 @@
 package workcellcomponents
 
 import (
+	"context"
 	"fmt"
 	"sync"
 
@@ -92,6 +93,13 @@ func poseFromLinkConfig(f *referenceframe.LinkConfig) spatialmath.Pose {
 
 // Name implements resource.Resource.
 func (d *decorationBase) Name() resource.Name { return d.name }
+
+// Status implements resource.Resource.
+func (d *decorationBase) Status(_ context.Context) (map[string]interface{}, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.commonStatusMap(), nil
+}
 
 // applyStandardSet applies the universal mutations from a
 // set_attributes map: color, label, visible, show_axes, opacity.
