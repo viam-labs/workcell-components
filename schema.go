@@ -59,12 +59,6 @@ func (e schemaEntry) whenNot(key string, value interface{}) schemaEntry {
 	return e
 }
 
-// whenIs tags an entry as relevant only while attribute `key` equals `value`.
-func (e schemaEntry) whenIs(key string, value interface{}) schemaEntry {
-	e.When = &schemaCondition{Key: key, Equals: value}
-	return e
-}
-
 // withHelp attaches operator-facing help text to an entry.
 func (e schemaEntry) withHelp(h string) schemaEntry {
 	e.Help = h
@@ -119,25 +113,8 @@ func enumListEntry(key, label, group string, values []string, help string) schem
 	return schemaEntry{Key: key, Type: "enum_list", Label: label, Group: group, Values: values, Help: help}
 }
 
-func stringEntry(key, label, group string) schemaEntry {
-	return schemaEntry{Key: key, Type: "string", Label: label, Group: group}
-}
-
 func vec3Entry(key, label, group, unit string) schemaEntry {
 	return schemaEntry{Key: key, Type: "vec3", Label: label, Group: group, Unit: unit}
-}
-
-// standardVisualSchema returns the attribute schema common to every
-// visual component in this module: label, color, visibility, axes,
-// opacity. Per-model schemas typically prepend Identity / Geometry
-// entries and end with this block.
-func standardVisualSchema() []schemaEntry {
-	return []schemaEntry{
-		colorEntry("color", "Color", schemaGroupVisual),
-		boolEntry("visible", "Visible", schemaGroupVisual),
-		showAxesEntry(),
-		numEntry("opacity", "Opacity multiplier", schemaGroupVisual, "", 0, 1, 0.05),
-	}
 }
 
 // showAxesEntry is the standard show_axes toggle. Toggling it emits an

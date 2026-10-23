@@ -214,18 +214,18 @@ func newWorkcellScene(
 		cfg:     *cfg,
 		sources: map[string]resource.Resource{},
 	}
-	s.SceneServiceBase.Logger = logger
-	s.SceneServiceBase.DefaultParentFrame = defaultParentFrame
-	s.SceneServiceBase.DefaultTickHz = cfg.animationTickHz()
-	s.SceneServiceBase.DefaultUUIDStrategy = "stable"
+	s.Logger = logger
+	s.DefaultParentFrame = defaultParentFrame
+	s.DefaultTickHz = cfg.animationTickHz()
+	s.DefaultUUIDStrategy = "stable"
 	// Hooks = s so the library calls SceneTick on us; lets the library's
 	// animation tick loop drive Animation specs attached to component
 	// visuals (e.g. roller spin, stack-light flash).
-	s.SceneServiceBase.Hooks = s
+	s.Hooks = s
 
 	// Resolve component dependencies.
 	for _, name := range cfg.allComponentNames() {
-		r, err := resource.FromDependencies[resource.Resource](deps, generic.Named(name))
+		r, err := resource.FromProvider[resource.Resource](deps, generic.Named(name))
 		if err != nil {
 			return nil, fmt.Errorf("component %q: %w", name, err)
 		}
@@ -242,7 +242,7 @@ func newWorkcellScene(
 	// animation tick loop requires to dispatch Spin / Pulse / Flicker
 	// animations on Visuals returned by components.
 	initialVisuals := s.collectInitialVisuals(ctx)
-	if err := s.SceneServiceBase.SetScene(
+	if err := s.SetScene(
 		visuals.SetSceneOpts{
 			TickHz:       cfg.animationTickHz(),
 			UUIDStrategy: "stable",
@@ -275,7 +275,7 @@ func newWorkcellScene(
 func (s *workcellScene) SceneTick(scene *visuals.Scene, t float64) []visuals.SceneEvent {
 	s.sceneMu.Lock()
 	defer s.sceneMu.Unlock()
-	return s.SceneServiceBase.DefaultSceneTick(scene, t)
+	return s.DefaultSceneTick(scene, t)
 }
 
 // Close stops the poll goroutine and the SceneServiceBase tick loop.
@@ -293,7 +293,7 @@ func (s *workcellScene) Close(ctx context.Context) error {
 func (s *workcellScene) DoCommand(ctx context.Context, cmd map[string]any) (map[string]any, error) {
 	if _, ok := cmd["refresh"]; ok {
 		s.refresh(ctx)
-		return map[string]any{"refreshed": s.SceneServiceBase.State() != nil}, nil
+		return map[string]any{"refreshed": s.State() != nil}, nil
 	}
 	return s.SceneServiceBase.DoCommand(ctx, cmd)
 }
@@ -353,7 +353,7 @@ func (s *workcellScene) refresh(ctx context.Context) {
 	s.sceneMu.Lock()
 	defer s.sceneMu.Unlock()
 
-	if s.SceneServiceBase.Scene == nil {
+	if s.Scene == nil {
 		// SetScene never ran — shouldn't happen, but guard against
 		// nil-deref before the animation tick loop catches up.
 		return
@@ -362,7 +362,7 @@ func (s *workcellScene) refresh(ctx context.Context) {
 	// Reap orphans: labels currently in the scene whose OWNER polled
 	// successfully this tick but didn't include them in the response.
 	var orphans []string
-	for _, label := range s.SceneServiceBase.Scene.Labels() {
+	for _, label := range s.Scene.Labels() {
 		if presentLabels[label] {
 			continue
 		}
@@ -378,10 +378,10 @@ func (s *workcellScene) refresh(ctx context.Context) {
 
 	var allEvents []visuals.SceneEvent
 	for _, label := range orphans {
-		allEvents = append(allEvents, s.SceneServiceBase.Scene.Remove(label)...)
+		allEvents = append(allEvents, s.Scene.Remove(label)...)
 	}
 	if len(newVisuals) > 0 {
-		events, err := s.SceneServiceBase.Scene.AddOrUpdate(visualsAsInterfaceSlice(newVisuals)...)
+		events, err := s.Scene.AddOrUpdate(visualsAsInterfaceSlice(newVisuals)...)
 		if err != nil {
 			s.logger.Warnw("workcell-scene: AddOrUpdate failed", "error", err)
 		} else {

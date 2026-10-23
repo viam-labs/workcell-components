@@ -28,11 +28,11 @@ import (
 var SafetyFenceModel = resource.NewModel("viam", "workcell-components", "safety-fence")
 
 const (
-	defaultFenceLengthMM   = 2000.0
-	defaultFenceHeightMM   = 1800.0
-	defaultFencePostSpacMM = 1000.0
-	defaultFencePostRadius = 18.0
-	defaultFenceRailRadius = 15.0
+	defaultFenceLengthMM    = 2000.0
+	defaultFenceHeightMM    = 1800.0
+	defaultFencePostSpacMM  = 1000.0
+	defaultFencePostRadius  = 18.0
+	defaultFenceRailRadius  = 15.0
 	defaultFenceScreenAlpha = 0.18
 )
 

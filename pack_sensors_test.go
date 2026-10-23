@@ -80,7 +80,9 @@ func TestBoxDetectLifecycle(t *testing.T) {
 	if out["taken"] != false {
 		t.Fatal("take from empty infeed should refuse")
 	}
-	b.DoCommand(context.Background(), map[string]interface{}{"reset": true})
+	if _, err := b.DoCommand(context.Background(), map[string]interface{}{"reset": true}); err != nil {
+		t.Fatal(err)
+	}
 	rd, _ = b.Readings(context.Background(), nil)
 	if rd["box_present"] != true {
 		t.Fatal("reset should dock a box")

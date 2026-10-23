@@ -182,7 +182,9 @@ func TestInfeedStateMapsBoxDetectReadings(t *testing.T) {
 		t.Fatalf("waiting box: %+v", st)
 	}
 
-	on.DoCommand(ctx, map[string]interface{}{"take": true})
+	if _, err := on.DoCommand(ctx, map[string]interface{}{"take": true}); err != nil {
+		t.Fatal(err)
+	}
 	if st = station(on).infeedState(ctx); st == nil || st.present ||
 		st.fraction < 0 || st.fraction > 0.05 {
 		t.Fatalf("just taken: %+v, want absent near the entry edge", st)
