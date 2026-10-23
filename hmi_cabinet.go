@@ -38,7 +38,7 @@ var (
 type HMICabinetConfig struct {
 	Label string `json:"label,omitempty"`
 
-	BodyDimsMM   *Vec3D `json:"body_dims_mm,omitempty"`
+	BodyDimsMM   *Vec3D  `json:"body_dims_mm,omitempty"`
 	PostHeightMM float64 `json:"post_height_mm,omitempty"`
 
 	BodyColor   *Color `json:"body_color,omitempty"`

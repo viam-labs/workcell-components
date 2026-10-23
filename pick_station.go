@@ -270,7 +270,7 @@ func newPickStation(
 
 	var infeed sensor.Sensor
 	if cfg.InfeedBoxDetect != "" {
-		snsr, err := sensor.FromDependencies(deps, cfg.InfeedBoxDetect)
+		snsr, err := sensor.FromProvider(deps, cfg.InfeedBoxDetect)
 		if err != nil {
 			// Unreachable in practice: Validate declares the sensor as
 			// a required dependency, so the graph withholds this

@@ -4,6 +4,7 @@ go 1.25.1
 
 require (
 	github.com/golang/geo v0.0.0-20260505155700-1c5af9662e82
+	github.com/viam-labs/viam-viz-helpers-go v0.0.0-20260519222628-6f4300101d73
 	github.com/viam-labs/viamkit v0.12.0
 	go.viam.com/rdk v0.105.0
 )
@@ -117,7 +118,6 @@ require (
 	github.com/spf13/cast v1.5.0 // indirect
 	github.com/srikrsna/protoc-gen-gotag v0.6.2 // indirect
 	github.com/stretchr/testify v1.11.1 // indirect
-	github.com/viam-labs/viam-viz-helpers-go v0.0.0-20260519222628-6f4300101d73 // indirect
 	github.com/viamrobotics/ice/v2 v2.3.40 // indirect
 	github.com/viamrobotics/webrtc/v3 v3.99.16 // indirect
 	github.com/viamrobotics/zeroconf v1.0.13 // indirect

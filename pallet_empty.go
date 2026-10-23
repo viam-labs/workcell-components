@@ -92,7 +92,7 @@ func newPalletEmpty(
 		return nil, err
 	}
 
-	store, err := resource.FromDependencies[worldstatestore.Service](
+	store, err := resource.FromProvider[worldstatestore.Service](
 		deps, worldstatestore.Named(cfg.storeName()))
 	if err != nil {
 		return nil, err

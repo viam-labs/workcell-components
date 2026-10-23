@@ -198,7 +198,7 @@ func newPallet(
 
 	var dock sensor.Sensor
 	if cfg.TrayDock != "" {
-		snsr, err := sensor.FromDependencies(deps, cfg.TrayDock)
+		snsr, err := sensor.FromProvider(deps, cfg.TrayDock)
 		if err != nil {
 			// Unreachable in practice: Validate declares the sensor as
 			// a required dependency, so the graph withholds this
