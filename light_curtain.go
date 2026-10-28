@@ -198,9 +198,9 @@ func (l *lightCurtain) buildVisuals() []visualWire {
 		beamColor = defaultCurtainBeamBrokenColor
 	} else {
 		beamAnim = map[string]interface{}{
-			"mode":     "pulse",
-			"period_s": 1.6,
-			"axis":     "z", // pulse beam radius (sphere/capsule radius mode)
+			"mode":         "pulse",
+			"period_s":     1.6,
+			"axis":         "z", // pulse beam radius (sphere/capsule radius mode)
 			"amplitude_mm": 2.0,
 		}
 	}

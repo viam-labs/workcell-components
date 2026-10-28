@@ -18,10 +18,10 @@ import (
 var WorkcellBoundsModel = resource.NewModel("viam", "workcell-components", "workcell-bounds")
 
 const (
-	defaultBoundsLengthMM    = 3000.0
-	defaultBoundsWidthMM     = 3000.0
-	defaultBoundsHeightMM    = 2500.0
-	defaultBoundsEdgeRadius  = 6.0
+	defaultBoundsLengthMM   = 3000.0
+	defaultBoundsWidthMM    = 3000.0
+	defaultBoundsHeightMM   = 2500.0
+	defaultBoundsEdgeRadius = 6.0
 )
 
 var defaultBoundsColor = Color{R: 60, G: 220, B: 220, A: 0.9} // cyan — distinguishable from yellow safety

@@ -27,9 +27,9 @@ const (
 )
 
 var (
-	defaultDecalColor       = Color{R: 230, G: 200, B: 30, A: 1}  // safety yellow
-	defaultHazardYellow     = Color{R: 240, G: 215, B: 40, A: 1}
-	defaultHazardBlack      = Color{R: 20, G: 20, B: 22, A: 1}
+	defaultDecalColor   = Color{R: 230, G: 200, B: 30, A: 1} // safety yellow
+	defaultHazardYellow = Color{R: 240, G: 215, B: 40, A: 1}
+	defaultHazardBlack  = Color{R: 20, G: 20, B: 22, A: 1}
 )
 
 type FloorDecalConfig struct {
