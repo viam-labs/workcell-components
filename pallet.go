@@ -271,6 +271,12 @@ func palletColor(cfg *PalletConfig) Color {
 
 func (p *pallet) Name() resource.Name { return p.name }
 
+func (p *pallet) Status(_ context.Context) (map[string]interface{}, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.statusMap(), nil
+}
+
 // DoCommand surface:
 //
 //	{"get_pose": true}             → {x, y, z, o_x, o_y, o_z, theta}
